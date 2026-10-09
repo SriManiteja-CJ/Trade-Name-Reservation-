@@ -1,0 +1,469 @@
+Trade Name Intelligence Service — Spec
+Oct 5, 2026
+ · 
+@Enugala Venkata Ramana
+1. Overview
+The Trade Name Intelligence Service is a new Python service that replaces the current AI integration with one LLM-assisted pipeline that validates Arabic/English trade names, finds similar names, suggests alternatives and briefs reviewers. Final decisions stay deterministic and auditable; the LLM can only add restrictions or route a name to human review.
+In scope
+Validation of new, edited, renewed, branch (outside UAQ) and legal-form-amended trade names
+Similarity search, suggestions, transliteration checks and keyword search
+Reviewer copilot for the DED online review and SSP committee steps
+Registry-to-index sync, word-list (lexicon) management, audit and evaluation
+Out of scope
+Fees, periods, renewal eligibility, BPM workflow and certificate generation (unchanged)
+Front-end redesign: existing endpoints and response fields are kept
+Goals
+Never auto-approve a name when an AI component is unavailable (fail closed)
+Validation p95 under 3 s; suggestions p95 under 5 s
+Every rejection explained in Arabic and English with a suggested fix
+Agreement with past reviewer decisions measured before any feature goes live
+2. Requirements
+Functional requirements F1–F22 are carried over from today's business rules; N1–N9 are quality requirements; E1–E8 are new capabilities.
+2.1 Functional
+ID
+Requirement
+F1
+Every trade name has an Arabic and an English form
+F2
+Exact-duplicate check against active names (not released, not expired, not draft), ignoring case and spaces, excluding the record being edited
+F3
+Similarity check against existing names
+F4
+Word checks: prohibited, profanity, unfriendly, special words, divine names, location names, family names
+F5
+Parse input into core name, activity words and legal form
+F6
+Arabic ↔ English transliteration
+F7
+Validate an edited transliteration against the original
+F8
+Up to 10 distinct, unreserved suggestions combining name + activity; legal form shown when the legal form requires it
+F9
+Complementary suggestions (name + related activity wording)
+F10
+Outside-UAQ branches get the suffix "Umm Al Quwain Branch" / "فرع أم القيوين"; conflicts checked with the suffix
+F11
+Legal-form amendment swaps or removes the old legal-form wording in both languages, then checks conflicts
+F12
+If the name is unchanged and only legal form or branch status changes, skip word checks but keep the similarity check
+F13
+Online (applicant) and Walk-in (employee) channels
+F14
+Messages follow the 
+lang
+ header; the failing language's result is shown
+F15
+Name index stays in sync on insert, edit, release and delete, with activity category and codes
+F16
+Per-capability feature flags
+F17
+English names returned in upper case
+F18
+Reserved names are never suggested
+F19
+Keyword search over trade names
+F20
+Support reviewer actions: approve, reject, return, SSP committee
+F21
+Rejected or released names become available again
+F22
+Search keyword stored in both languages
+2.2 Non-functional
+ID
+Requirement
+N1
+Fail closed: an AI outage never approves a name
+N2
+Validation p95 < 3 s; suggestions p95 < 5 s
+N3
+Every AI decision auditable, linked to the real request ID
+N4
+Every flag explained in Arabic and English
+N5
+Self-hosted open-source LLM; no data leaves DED infrastructure
+N6
+Prompt-injection resistant; the trade name is untrusted input
+N7
+Quality measured against past reviewer decisions
+N8
+Bounded, predictable LLM cost
+N9
+Existing endpoints and response fields unchanged (additive only)
+2.3 New capabilities
+ID
+Capability
+E1
+Catch misspellings, leetspeak, Arabizi and cross-language offensive meanings
+E2
+Phonetic and semantic matching across scripts (Noor = Nour = النور)
+E3
+Check the name fits the chosen activity category
+E4
+Explain rejections and propose fixes
+E5
+Reviewer brief and draft comments
+E6
+Suggest an activity category from the name
+E7
+LLM-proposed lexicon variants, approved by a human
+E8
+Fuzzy, cross-language search
+3. Architecture
+Each validation request runs through six stages; the LLM is used in stages ④ and ⑥ only, and stage ⑤ makes the final call.
+architecture · 6 pipeline stages, 3 shared services, 3 background jobs
+Stages ①–③ need no LLM, so duplicate and word-list checks still run during an LLM outage. Background jobs keep the name index current and support reviewers and admins.
+Component
+Responsibility
+Uses LLM
+① Normalizer
+Arabic: remove diacritics and tatweel, unify alef forms, ة→ه, ى→ي. English: NFKC + case-fold. Strip legal-form and branch tokens by exact match
+No
+② Deterministic gates
+Exact duplicate on normalized keys; lexicon match with variants and edit distance; NameComposer applies branch suffix, legal-form display and the F12 exemption
+No
+③ Retriever
+Hybrid top-10 similar active names: multilingual embeddings, cross-script phonetic key, trigrams
+Embeddings only
+④ LLM analyzer
+One structured call returning parse, risks, similarity verdicts, transliteration check and activity fit (section 4.2)
+Yes
+⑤ Decision policy
+Combines all signals into OK / NEEDS_REVIEW / BLOCKED (section 4.1)
+No
+⑥ Suggestion engine
+LLM drafts ~25 bilingual pairs; batch re-check through ①–②; batch LLM screen; one reservation query; rank and return top 10; template fallback
+Yes
+⑦ Index sync worker
+Outbox row written in the same transaction as each name change; computes keys and embeddings; nightly reconciliation
+Embeddings only
+⑧ Reviewer copilot
+Brief per submission: flags, top-5 similar names, transliteration and fit verdicts, recommendation; drafts AdminComments
+Yes
+⑨ Lexicon manager
+Admin UI for word lists; LLM proposes variants (spellings, Arabizi, plurals); a human approves each
+Yes
+LLM gateway
+Timeouts, retry, circuit breaker, cache, schema validation, audit write
+Wraps all LLM calls
+3.1 Technology stack (Python)
+The service is built from scratch in Python 3.12 with async I/O throughout; every component runs on DED infrastructure.
+Layer
+Choice
+API
+FastAPI + Pydantic v2 models; served by Uvicorn behind the existing gateway
+Auth
+Validates the JWTs issued by the current identity provider; channel (Online / Walk-in) read from the token
+Data access
+SQLAlchemy 2.0 (async) + asyncpg; Alembic migrations
+Database
+PostgreSQL with pgvector (embeddings) and pg_trgm (trigram similarity)
+Arabic text
+Custom normalizer module; CAMeL Tools for morphology and transliteration fallback
+Fuzzy matching
+RapidFuzz (edit distance); custom cross-script phonetic key
+LLM serving
+vLLM hosting open-source instruction models with strong Arabic support; guided JSON decoding against the Pydantic schema
+Embeddings
+Open-source multilingual embedding model served by Text Embeddings Inference
+Background jobs
+arq workers on Redis for outbox sync, reviewer briefs and lexicon proposals
+Cache
+Redis
+Observability
+OpenTelemetry tracing, Prometheus metrics, structlog JSON logs
+Testing and eval
+pytest unit and integration tests; evaluation harness runs the gold set in CI
+Packaging and deploy
+uv for dependencies; Docker images on DED's container platform
+Suggested package layout: 
+api/
+ (routes), 
+pipeline/
+ (stages ①–⑥), 
+llm/
+ (client, prompts, schemas), 
+index/
+ (pgvector repository, sync worker), 
+copilot/
+, 
+lexicon/
+, 
+audit/
+, 
+eval/
+.
+4. Decision policy and LLM contract
+The policy engine, not the LLM, produces the final outcome: OK, NEEDS_REVIEW or BLOCKED. The LLM can add flags but never lift a hard block.
+4.1 Decision rules
+Signal
+Outcome
+Hard gate hit (exact duplicate, lexicon block)
+BLOCKED, whatever the LLM says
+LLM risk with severity 
+block
+ and confidence ≥ threshold
+BLOCKED
+LLM risk 
+review
+, low confidence, transliteration mismatch or poor activity fit
+NEEDS_REVIEW (applicant may submit; reviewer sees flags)
+LLM unavailable or timed out
+Hard gates still run; best outcome is NEEDS_REVIEW
+No flags
+OK
+The F12 exemption (unchanged name) is applied here: word checks are skipped, similarity is kept. Thresholds live in configuration and are tuned during shadow mode.
+4.2 LLM analyzer output
+One call per validation, temperature 0, output enforced by JSON schema. Input is only the name pair, activity category, legal form, channel and the top-10 similar names.
+{
+  "parse": { "core_ar": "", "core_en": "", "activity_words": [], "legal_form": null, "branch": false },
+  "transliteration": { "consistent": true, "confidence": 0.0, "expected_en": "", "expected_ar": "" },
+  "risks": [{
+    "category": "prohibited|profanity|unfriendly|special|divine_name|location|family_name|impersonation|misleading",
+    "language": "ar|en|both", "span": "", "severity": "block|review|info", "confidence": 0.0,
+    "reason_en": "", "reason_ar": "", "fix_en": "", "fix_ar": ""
+  }],
+  "similar": [{ "registry_id": 0, "confusingly_similar": true, "reason_en": "", "reason_ar": "" }],
+  "activity_fit": { "fits": true, "suggested_category_code": null, "reason_en": "", "reason_ar": "" }
+}
+4.3 Prompt rules
+The trade name is wrapped in 
+<trade_name>
+ tags and declared as data, never instructions
+System prompt holds DED naming rules and examples from past reviewer decisions; it is cached
+Prompts are versioned; the version is stored with every audit record
+Output that fails schema validation is treated as "LLM unavailable"
+5. Data model, APIs and feature flags
+Six new tables support the service; existing endpoints keep their contracts and gain only optional fields.
+5.1 New tables
+Table
+Key columns
+Purpose
+TradeNameIndex
+Id, NormalizedAr, NormalizedEn, PhoneticKey, EmbeddingAr, EmbeddingEn, CategoryId, Status, ExpiryDate
+Fast exact, phonetic and vector lookup of active names (PostgreSQL + pgvector)
+Lexicon
+Term, NormalizedTerm, Category, Lang, Severity, Variants, ApprovedBy
+Managed word lists for F4; changes approved by DED
+NameIndexOutbox
+Id, TradeNameId, Operation, CreatedOn, ProcessedOn
+Reliable index sync (F15)
+AiDecisionAudit
+RequestId, Channel, InputHash, PromptVersion, ModelId, RawOutput, Outcome, LatencyMs, Tokens
+Audit trail (N3)
+ReviewerBrief
+RequestId, BriefJson, GeneratedOn, ReviewerDecision
+Copilot output and feedback (E5, N7)
+PromptVersion
+Id, Name, Text, CreatedOn, Active
+Versioned prompts
+5.2 Endpoints
+Endpoint
+Status
+Change
+POST TradeName/ValidateWithSuggestion
+Existing
+Adds 
+decision
+, 
+reasons[]
+, 
+similarNames[]
+, 
+activityFit
+GET TradeName/IsTradeNameExist
+Existing
+Uses normalized keys
+GET TradeName/Search
+Existing
+Hybrid retrieval
+POST TradeName/CheckTransliteration
+New
+F7
+POST TradeName/SuggestCategory
+New
+E6
+GET TradeName/ReviewerBrief/{requestId}
+New
+E5
+POST Admin/Lexicon/Proposals
+New
+E7, approve or reject variants
+The existing validation fields (
+Prohibted
+, 
+Profanity
+, 
+Unfriendly
+, 
+Special
+, 
+AllahNames
+, 
+LocationNames
+, 
+FamilyNames
+, 
+Similarity
+) are still filled, so current front ends work unchanged.
+5.3 Feature flags
+Each flag takes 
+Off
+, 
+Shadow
+ (run and log, no effect on outcome) or 
+On
+.
+Flag
+Controls
+Ai.Analyzer
+LLM semantic validation
+Ai.Suggestions
+LLM suggestion generation
+Ai.ReviewerBrief
+Reviewer copilot
+Ai.Search
+Hybrid semantic search
+Ai.LexiconProposals
+LLM lexicon variants
+6. Security, operations and evaluation
+The LLM sits behind a gateway that enforces timeouts, caching, redaction and audit; quality is gated by an evaluation set built from past reviewer decisions.
+6.1 Security and privacy
+Only the name pair, activity category and legal form leave the service; no applicant names, IDs, emails or phone numbers
+Self-hosted open-source LLM and embedding models inside DED infrastructure; no external API calls
+Trade name treated as untrusted data in prompts; outputs validated against the schema before use
+Policy engine cannot be overridden by model output
+6.2 LLM gateway
+Async 
+LlmClient
+ protocol: 
+analyze
+, 
+generate_suggestions
+, 
+screen_batch
+, 
+brief
+; calls the self-hosted vLLM endpoint (OpenAI-compatible API)
+2.5 s timeout on the validation path, one retry on transient errors, circuit breaker
+Response cache keyed by normalized pair + category + legal form + prompt version, 24 h TTL
+Model tiers, all open-source and self-hosted: a larger instruction model for analysis and reviewer briefs, a smaller one for suggestion generation and screening, and a multilingual embedding model for the name index
+6.3 Observability
+Metrics: latency per stage, LLM error and timeout rate, outcome mix (OK / NEEDS_REVIEW / BLOCKED), cache hit rate, tokens per request
+Alerts when the LLM error rate or the NEEDS_REVIEW share spikes
+6.4 Evaluation
+Gold set from past approve/reject decisions and reviewer notes, labelled and owned by DED, plus adversarial cases (Arabizi, mixed scripts, injection attempts)
+Runs in CI on every prompt or model change
+Tracked: precision and recall per F4 category, agreement with reviewers, false-block rate
+A feature moves from Shadow to On only after it meets agreed thresholds
+7. Traceability and rollout
+Every requirement in section 2 maps to at least one component; component numbers refer to section 3.
+7.1 Traceability matrix
+Req
+Fulfilled by
+F1
+① normalizes both forms; ④ analyzes the pair together
+F2
+① normalized keys + ② indexed lookup with one shared filter
+F3
+③ hybrid retrieval + ④ confusing-similarity judgement
+F4
+② lexicon (hard) + ④ semantic layer + ⑨ lexicon upkeep
+F5
+① dictionary stripping + ④ 
+parse
+F6
+④ 
+transliteration
+ + deterministic fallback library
+F7
+CheckTransliteration
+ endpoint backed by ④
+F8
+⑥ generate → filter → rank
+F9
+⑥ complementary patterns in the generation constraints
+F10
+NameComposer suffix rule + suffix-aware matching in ②
+F11
+NameComposer token swap + ② conflict check
+F12
+⑤ policy exemption rule
+F13
+Channel passed in request context and stored in audit
+F14
+⑤ picks the failing language; reasons always bilingual
+F15
+⑦ outbox worker + nightly reconciliation
+F16
+Per-capability Off / Shadow / On flags
+F17
+⑥ final formatting
+F18
+⑥ set-based reservation check
+F19
+③ hybrid retriever behind 
+Search
+F20
+⑧ reviewer brief + draft comments
+F21
+Status filter in ② + ⑦ removes released names from the index
+F22
+Keyword transliteration via ④ with fallback
+N1
+⑤ outage → NEEDS_REVIEW; hard gates need no LLM
+N2
+Single analyzer call, parallel retrieval, cache, 2.5 s timeout
+N3
+AiDecisionAudit with real request IDs
+N4
+Bilingual reason and fix on every flag
+N5
+Self-hosted model; only name and category sent
+N6
+Delimited input, schema-enforced output, policy cannot be overridden
+N7
+Gold set, CI evaluation, shadow mode
+N8
+Model tiers, caching, batched screening
+N9
+Same routes and fields, additive changes only
+E1
+④ semantic risk checks
+E2
+③ phonetic + embedding matching
+E3
+④ 
+activity_fit
+E4
+④ 
+fix_en
+ / 
+fix_ar
+E5
+⑧ reviewer copilot
+E6
+SuggestCategory
+ endpoint backed by ④
+E7
+⑨ lexicon manager
+E8
+③ hybrid search
+7.2 Rollout
+Foundation
+ — normalizer, deterministic gates, NameComposer, name index with outbox, audit table. Exit: all F-requirements pass regression with AI flags Off.
+Analyzer in Shadow
+ — LLM runs and logs beside reviewer decisions. Exit: agreed precision, recall and false-block thresholds met on the gold set and live traffic.
+Analyzer On
+ — decision policy and bilingual explanations live.
+Suggestions and search
+ — LLM suggestion engine and hybrid search, each through Shadow first.
+Reviewer copilot, lexicon manager, category suggestion.
+7.3 Decisions
+Implementation:
+ a new service written entirely in Python (section 3.1); it exposes the same API routes so existing front ends keep working
+LLM hosting:
+ self-hosted open-source models inside DED infrastructure; no trade-name data leaves the environment
+Vector store:
+ PostgreSQL with pgvector for the name index
+Ownership:
+ DED owns lexicon approvals and the gold-set labels
