@@ -47,7 +47,7 @@ export default function Footer({ lang }) {
               : 'Governed under UAE Federal Law No. 37 of 1992 & Federal Decree-Law No. 36 of 2021 on Trademarks.'}
           </div>
           <div>
-            Fail-Closed Gatekeeper (N1) • 100% Zero-Trust Audit (N3) • Pure Zero-Dep Metrics
+            {isAr ? 'نظام الاستعلام والرقابة على الأسماء التجارية • أم القيوين' : 'Official Trade Name Intelligence & Governance Platform'}
           </div>
         </div>
       </div>

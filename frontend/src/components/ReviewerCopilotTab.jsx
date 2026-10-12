@@ -87,7 +87,7 @@ export default function ReviewerCopilotTab({ lang, activeRequestId }) {
             <span>🤖</span>
             <span>{isAr ? 'مساعد المراجع الذكي (Reviewer Copilot)' : 'AI Reviewer Copilot & Governance Dossier'}</span>
           </h2>
-          <span className="badge badge-gold">Phase 4 • E5 • F20</span>
+          <span className="badge badge-gold">{isAr ? 'نظام التحليل الذكي' : 'AI Analysis Engine'}</span>
         </div>
         <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '16px' }}>
           {isAr
@@ -276,7 +276,7 @@ export default function ReviewerCopilotTab({ lang, activeRequestId }) {
             <div className="card">
               <div className="card-header">
                 <h3 className="card-title">{isAr ? 'مسودة الملاحظات الإدارية (AI Draft)' : 'Draft Administrative Comments'}</h3>
-                <span className="badge badge-gold">Bilingual N4</span>
+                <span className="badge badge-gold">{isAr ? 'ثنائي اللغة' : 'Bilingual Draft'}</span>
               </div>
 
               <div className="form-group" style={{ marginBottom: '16px' }}>
@@ -304,7 +304,7 @@ export default function ReviewerCopilotTab({ lang, activeRequestId }) {
               <hr style={{ borderColor: 'var(--border-color)', margin: '20px 0' }} />
 
               <h3 style={{ fontSize: '1rem', marginBottom: '12px', color: 'var(--gold-primary)' }}>
-                {isAr ? 'اتخاذ القرار الإداري النهائي (Closed-Loop Feedback)' : 'Record Officer Final Decision (F20, N7)'}
+                {isAr ? 'اتخاذ القرار الإداري النهائي' : 'Record Officer Final Decision'}
               </h3>
 
               {decisionSuccess && (

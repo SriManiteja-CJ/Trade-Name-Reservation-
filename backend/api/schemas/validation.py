@@ -214,12 +214,15 @@ class RegisterTradeNameRequest(BaseModel):
 
 class RegisterTradeNameResponse(BaseModel):
     """Response model for POST TradeName/Register."""
+    model_config = ConfigDict(extra="allow")
+
     success: bool
     status: str  # "REGISTERED" | "REJECTED_ALREADY_EXISTS" | "REJECTED_LEXICON_BLOCK"
     reference_number: Optional[str] = None
     trade_name_id: Optional[int] = None
-    name_ar: str
-    name_en: str
+    name_ar: Optional[str] = ""
+    name_en: Optional[str] = ""
+    is_existing: Optional[bool] = False
     message_en: str
     message_ar: str
     suggestions: list[SuggestionResponseItem] = Field(default_factory=list)
@@ -266,19 +269,33 @@ class TransliterateResponse(BaseModel):
 # SuggestCategory endpoint schemas (Phase 3, E6)
 # ---------------------------------------------------------------------------
 class SuggestCategoryRequest(BaseModel):
-    """POST TradeName/SuggestCategory — E6."""
-    NameAr: str
-    NameEn: str
+    """POST TradeName/SuggestCategory — E6 with Activity Type Mismatch & Clarification."""
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    NameAr: Optional[str] = Field("", validation_alias=AliasChoices("NameAr", "TradeNameArabic", "name_ar"))
+    NameEn: Optional[str] = Field("", validation_alias=AliasChoices("NameEn", "TradeNameEnglish", "name_en"))
+    ActivityType: Optional[str] = Field("", validation_alias=AliasChoices("ActivityType", "activity_type", "activityType", "activity"))
+    ActivityCategoryId: Optional[int] = Field(None, validation_alias=AliasChoices("ActivityCategoryId", "activity_category_id", "categoryId"))
+    UserContext: Optional[str] = Field(None, validation_alias=AliasChoices("UserContext", "user_context", "clarification"))
 
 
 class SuggestCategoryResponse(BaseModel):
+    status: str = "match"  # match | mismatch | generic_activity | clarification_needed
+    is_match: bool = True
+    mismatch_detected: bool = False
+    clarification_needed: bool = False
+    clarification_question_en: Optional[str] = None
+    clarification_question_ar: Optional[str] = None
+    original_activity: Optional[str] = None
     suggested_category_code: Optional[str] = None
     category_id: Optional[int] = None
     suggested_activity_type: Optional[str] = None
     suggested_activities: list[str] = Field(default_factory=list)
     activity_categories: list[dict] = Field(default_factory=list)
+    recommended_trade_names: list[dict] = Field(default_factory=list)
     reason_en: str = ""
     reason_ar: str = ""
+    verified: bool = True
 
 
 # ---------------------------------------------------------------------------

@@ -11,11 +11,16 @@ from config.settings import get_settings
 
 settings = get_settings()
 
+engine_kwargs = {"echo": settings.debug}
+if "sqlite" in settings.database_url.lower():
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    engine_kwargs["pool_size"] = settings.db_pool_size
+    engine_kwargs["max_overflow"] = settings.db_max_overflow
+
 engine = create_async_engine(
     settings.database_url,
-    pool_size=settings.db_pool_size,
-    max_overflow=settings.db_max_overflow,
-    echo=settings.debug,
+    **engine_kwargs,
 )
 
 AsyncSessionLocal = async_sessionmaker(

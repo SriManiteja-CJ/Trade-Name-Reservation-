@@ -50,7 +50,7 @@ export default function ReviewConfirmationModal({
           <div>
             <div style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600 }}>{isAr ? 'نوع الفرع:' : 'Branch Status:'}</div>
             <div style={{ fontSize: '0.88rem', fontWeight: 600, color: '#334155' }}>
-              {formData.isOutsideUaq ? (isAr ? 'فرع خارج الإمارة (F10)' : 'Outside UAQ Branch (F10)') : (isAr ? 'رئيسي / داخل الإمارة' : 'Main / Inside UAQ')}
+              {formData.isOutsideUaq ? (isAr ? 'فرع خارج الإمارة' : 'Outside UAQ Branch') : (isAr ? 'رئيسي / داخل الإمارة' : 'Main / Inside UAQ')}
             </div>
           </div>
 

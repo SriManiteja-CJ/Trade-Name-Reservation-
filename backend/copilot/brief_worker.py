@@ -140,7 +140,7 @@ class ReviewerCopilotService:
             )
             self.session.add(brief_obj)
 
-        await self.session.flush()
+        await self.session.commit()
         return brief_obj
 
     async def get_brief(self, request_id: str) -> Optional[ReviewerBrief]:
@@ -164,7 +164,7 @@ class ReviewerCopilotService:
 
         if brief:
             brief.reviewer_decision = decision
-            await self.session.flush()
+            await self.session.commit()
             logger.info(
                 "reviewer_decision_recorded",
                 extra={"request_id": request_id, "decision": decision}

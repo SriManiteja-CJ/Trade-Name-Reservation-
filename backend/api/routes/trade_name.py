@@ -29,7 +29,7 @@ Spec references:
 import asyncio
 import logging
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -70,6 +70,12 @@ from pipeline.llm_analyzer import run_llm_analyzer
 from pipeline.name_composer import compose
 from pipeline.normalizer import normalize_arabic, normalize_english
 from copilot.brief_worker import ReviewerCopilotService
+from pipeline.activity_catalogue import (
+    find_category_by_keyword,
+    get_all_categories,
+    get_category_by_code,
+    get_category_by_id,
+)
 from pipeline.retriever import HybridRetriever
 from pipeline.suggestion_engine import SuggestionEngine
 
@@ -480,10 +486,23 @@ async def check_transliteration(
     )
 
 
+@router.get(
+    "/ActivityCategories",
+    summary="Get all official business activity categories and approved representative activities",
+)
+async def get_activity_categories() -> list[dict[str, Any]]:
+    """
+    GET TradeName/ActivityCategories
+    Returns the 10 official DED Umm Al Quwain business activity categories
+    and their approved representative activity types.
+    """
+    return get_all_categories()
+
+
 @router.post(
     "/SuggestCategory",
     response_model=SuggestCategoryResponse,
-    summary="Suggest activity category for name (Phase 3, E6)",
+    summary="AI-Powered Trade Name & Business Activity Recommendation with Mismatch Detection (E6)",
 )
 async def suggest_category(
     request: SuggestCategoryRequest,
@@ -492,116 +511,141 @@ async def suggest_category(
 ) -> SuggestCategoryResponse:
     """
     POST TradeName/SuggestCategory (spec §5.2, E6).
-    Suggests UAE activity category based on trade name keywords.
+    Dynamically analyzes trade name and entered activity:
+    - Identifies mismatches (e.g. Teja Cafe + Technology)
+    - Interprets generic activities (e.g. Technology -> Software development, IT consultancy)
+    - Formulates clarification questions when broad or ambiguous (e.g. Teja Foods, TJ Enterprises)
+    - Dynamically recommends approved activities and alternative trade names
+    - Validates against the 10 official DED activity categories
     """
-    # 1. Attempt LLM Category Suggestion when ai_analyzer != off
+    norm_ar = request.NameAr or ""
+    norm_en = request.NameEn or ""
+    act_type = request.ActivityType or ""
+    user_ctx = request.UserContext or ""
+
+    # 1. AI Reasoning via LlmGateway
+    llm_output = None
     if settings.ai_analyzer != FlagMode.off:
         try:
             gateway = LlmGateway(session=db)
-            llm_res = await gateway.suggest_category(
-                request_id="cat-sug",
+            llm_output = await gateway.suggest_category(
+                request_id=f"act-sug-{uuid.uuid4().hex[:8]}",
                 channel=channel,
-                name_ar=request.NameAr,
-                name_en=request.NameEn,
+                name_ar=norm_ar,
+                name_en=norm_en,
+                activity_type=act_type,
+                user_context=user_ctx,
             )
             await gateway.close()
-            if llm_res and llm_res.suggested_category_code:
-                return SuggestCategoryResponse(
-                    suggested_category_code=llm_res.suggested_category_code,
-                    reason_en=llm_res.reason_en,
-                    reason_ar=llm_res.reason_ar,
-                )
         except Exception as exc:
-            logger.warning("llm_suggest_category_failed", extra={"error": str(exc)})
+            logger.warning("llm_suggest_activity_failed", extra={"error": str(exc)})
 
-    # 2. Deterministic & Contextual Keyword Classification Fallback
-    norm_ar = normalize_arabic(request.NameAr).lower() if request.NameAr else ""
-    norm_en = normalize_english(request.NameEn).lower() if request.NameEn else ""
-    combined = f"{norm_ar} {norm_en}"
+    # If LLM returned valid structured decision:
+    if llm_output and isinstance(llm_output, dict) and "recommended_category_code" in llm_output:
+        cat_code = llm_output.get("recommended_category_code", "COMM_001")
+        cat_entry = get_category_by_code(cat_code) or get_category_by_code("COMM_001")
 
-    if any(w in combined for w in ["restaurant", "مطعم", "cafe", "مقهى", "food", "اغذية", "وجبات", "kitchen", "coffee", "bistro", "bakery", "sweet", "diner", "dining", "tea", "roaster", "قهوة"]):
+        recommended_act = llm_output.get("recommended_activity_type")
+        available_acts = llm_output.get("available_activity_types") or cat_entry["representative_activities"]
+        if not recommended_act and available_acts:
+            recommended_act = available_acts[0]
+
         return SuggestCategoryResponse(
-            suggested_category_code="REST_004",
-            category_id=4,
-            suggested_activity_type="Cafe and Restaurant",
-            suggested_activities=["Speciality Coffee & Cafe", "Cafe and Restaurant", "Fast Food & Snacks", "Takeaway Food and Beverage"],
-            activity_categories=[
-                {"code": "43469", "name_en": "Beverage serving activities", "name_ar": "أنشطة تقديم المشروبات"},
-                {"code": "12849", "name_en": "Restaurant and cafe", "name_ar": "مطعم ومقهى"},
-                {"code": "12346", "name_en": "Fast Food Restaurant", "name_ar": "مطعم وجبات سريعة"},
-                {"code": "34446", "name_en": "Food Delivery Services", "name_ar": "خدمات توصيل الأغذية"},
-                {"code": "233463", "name_en": "Takeaway Food Services", "name_ar": "خدمات الوجبات الجاهزة"},
-            ],
-            reason_en="Keywords indicate food, beverage, and cafe hospitality services.",
-            reason_ar="تشير الكلمات إلى نشاط المطاعم والمقاهي وتقديم المشروبات والأغذية.",
+            status=llm_output.get("status", "match"),
+            is_match=bool(llm_output.get("is_match", True)),
+            mismatch_detected=bool(llm_output.get("mismatch_detected", False)),
+            clarification_needed=bool(llm_output.get("clarification_needed", False)),
+            clarification_question_en=llm_output.get("clarification_question_en"),
+            clarification_question_ar=llm_output.get("clarification_question_ar"),
+            original_activity=act_type,
+            suggested_category_code=cat_entry["code"],
+            category_id=cat_entry["category_id"],
+            suggested_activity_type=recommended_act or cat_entry["name_en"],
+            suggested_activities=available_acts,
+            activity_categories=cat_entry.get("isic_codes", []),
+            recommended_trade_names=llm_output.get("recommended_trade_names", []),
+            reason_en=llm_output.get("reason_en") or llm_output.get("reason") or (
+                f"The trade name strongly implies {cat_entry['name_en']} activity ('{recommended_act}'), which conflicts with '{act_type}'."
+                if llm_output.get("mismatch_detected")
+                else f"Business activity aligned with {cat_entry['name_en']} ('{recommended_act}')."
+            ),
+            reason_ar=llm_output.get("reason_ar") or llm_output.get("reason_ar_text") or (
+                f"يشير الاسم التجاري إلى نشاط {cat_entry['name_ar']} ('{recommended_act}')، وهو ما يتعارض مع '{act_type}'."
+                if llm_output.get("mismatch_detected")
+                else f"النشاط التجاري المعتمد متوافق مع {cat_entry['name_ar']}."
+            ),
+            verified=True,
         )
-    elif any(w in combined for w in ["tech", "تقني", "software", "برمج", "حلول", "digital", "data", "it", "cloud", "cyber", "ai", "smart"]):
-        return SuggestCategoryResponse(
-            suggested_category_code="TECH_003",
-            category_id=3,
-            suggested_activity_type="Information Technology & Software Solutions",
-            suggested_activities=["Software Publishing & Development", "IT Infrastructure Consulting", "Cloud & Web Applications"],
-            activity_categories=[
-                {"code": "62010", "name_en": "Computer programming activities", "name_ar": "أنشطة البرمجة الحاسوبية"},
-                {"code": "62020", "name_en": "Computer consultancy and facilities management", "name_ar": "استشارات الحاسوب وإدارة المرافق"},
-                {"code": "63110", "name_en": "Data processing, hosting and related activities", "name_ar": "معالجة البيانات واستضافتها والأنشطة المتصلة بها"},
-            ],
-            reason_en="Keywords indicate technology and software solutions activity.",
-            reason_ar="تشير الكلمات إلى نشاط تقنية المعلومات والحلول البرمجية.",
-        )
-    elif any(w in combined for w in ["consult", "استشار", "service", "خدمات", "management", "ادارة", "advisory", "audit"]):
-        return SuggestCategoryResponse(
-            suggested_category_code="SERV_002",
-            category_id=2,
-            suggested_activity_type="Professional & Management Consultancy",
-            suggested_activities=["Business Management Consultancy", "Corporate Services & Advisory", "Project Management Services"],
-            activity_categories=[
-                {"code": "70200", "name_en": "Management consultancy activities", "name_ar": "أنشطة الاستشارات الإدارية"},
-                {"code": "74900", "name_en": "Other professional, scientific and technical activities", "name_ar": "أنشطة مهنية وعلمية وتقنية أخرى"},
-            ],
-            reason_en="Keywords indicate professional consultancy and business services.",
-            reason_ar="تشير الكلمات إلى نشاط الاستشارات والخدمات الإدارية والمهنية.",
-        )
-    elif any(w in combined for w in ["contract", "مقاول", "build", "بناء", "construction", "انشاء", "engineer"]):
-        return SuggestCategoryResponse(
-            suggested_category_code="CONT_006",
-            category_id=6,
-            suggested_activity_type="General Contracting & Construction",
-            suggested_activities=["Building Contracting", "Electromechanical Works", "Interior Decoration & Fit-out"],
-            activity_categories=[
-                {"code": "41000", "name_en": "Construction of buildings", "name_ar": "تشييد المباني"},
-                {"code": "43210", "name_en": "Electrical installation", "name_ar": "التركيبات الكهربائية"},
-                {"code": "43300", "name_en": "Building completion and finishing", "name_ar": "أعمال إكمال وتشطيب المباني"},
-            ],
-            reason_en="Keywords indicate contracting, engineering, and building construction activity.",
-            reason_ar="تشير الكلمات إلى نشاط المقاولات وأعمال البناء والتشييد.",
-        )
-    elif any(w in combined for w in ["real estate", "عقار", "property", "اسكان", "املاك", "broker"]):
-        return SuggestCategoryResponse(
-            suggested_category_code="REAL_005",
-            category_id=5,
-            suggested_activity_type="Real Estate Development & Brokerage",
-            suggested_activities=["Real Estate Buying & Selling Brokerage", "Leasing & Management", "Property Valuation"],
-            activity_categories=[
-                {"code": "68100", "name_en": "Real estate activities with own or leased property", "name_ar": "الأنشطة العقارية في الممتلكات الخاصة أو المؤجرة"},
-                {"code": "68200", "name_en": "Real estate activities on a fee or contract basis", "name_ar": "الأنشطة العقارية على أساس رسوم أو عقود"},
-            ],
-            reason_en="Keywords indicate real estate development, brokerage, and property management.",
-            reason_ar="تشير الكلمات إلى نشاط العقارات وإدارة الممتلكات والوساطة.",
-        )
-    else:
-        return SuggestCategoryResponse(
-            suggested_category_code="COMM_001",
-            category_id=1,
-            suggested_activity_type="General Commercial Trading",
-            suggested_activities=["General Trading", "Wholesale & Retail Merchandise", "Import & Export"],
-            activity_categories=[
-                {"code": "46900", "name_en": "Non-specialised wholesale trade", "name_ar": "تجارة الجملة غير المتخصصة"},
-                {"code": "47190", "name_en": "Other retail sale in non-specialised stores", "name_ar": "تجارة التجزئة في المتاجر غير المتخصصة"},
-            ],
-            reason_en="General commercial and trading activity.",
-            reason_ar="نشاط التجارة العامة والتوريدات التجارية.",
-        )
+
+    # 2. Resilient Deterministic Fallback if LLM is unavailable:
+    combined = f"{norm_en.lower()} {norm_ar.lower()}".strip()
+    act_lower = act_type.lower().strip()
+    is_mismatch = False
+    mismatch_reason_en = ""
+    mismatch_reason_ar = ""
+    clarification_needed = False
+    clarification_q_en = None
+    clarification_q_ar = None
+    alt_names: list[dict[str, str]] = []
+
+    matched_cat = None
+    if act_type:
+        matched_cat = find_category_by_keyword(act_type)
+    if not matched_cat and (norm_en or norm_ar):
+        matched_cat = find_category_by_keyword(f"{norm_en} {norm_ar}")
+    if not matched_cat:
+        matched_cat = get_category_by_code("COMM_001")
+
+    # Check 1: Food / Cafe mismatch with Tech
+    if any(w in combined for w in ["cafe", "coffee", "restaurant", "food", "مطعم", "مقهى"]):
+        if any(w in act_lower for w in ["tech", "software", "it", "تقني", "برمج"]):
+            is_mismatch = True
+            matched_cat = get_category_by_code("COMM_001")
+            mismatch_reason_en = f"The trade name implies food & beverage or cafe operations, which conflicts with '{act_type}'."
+            mismatch_reason_ar = f"يشير الاسم التجاري إلى نشاط المطاعم والمقاهي والأغذية، وهو ما يتعارض مع '{act_type}'."
+            alt_names = [
+                {"name_en": f"{norm_en} & Restaurant", "name_ar": f"{norm_ar} ومطعم"},
+                {"name_en": f"{norm_en} Hospitality", "name_ar": f"{norm_ar} للضيافة"},
+            ]
+        elif act_lower in ["business", "services", "general", "اعمال", "خدمات"]:
+            clarification_needed = True
+            matched_cat = get_category_by_code("COMM_001")
+            clarification_q_en = f"The trade name '{norm_en}' implies a food-related business, but '{act_type}' is too generic. Do you intend food trading, catering, restaurant operations, or food manufacturing?"
+            clarification_q_ar = f"يشير الاسم إلى نشاط غذائي، لكن '{act_type}' عام جداً. هل تقصد تجارة الأغذية، المطاعم والمقاهي، أم تصنيع الأغذية؟"
+            mismatch_reason_en = f"Trade name indicates food sector, but '{act_type}' requires operational clarification."
+            mismatch_reason_ar = f"يشير الاسم إلى قطاع الأغذية ولكن '{act_type}' يتطلب توضيح نطاق العمليات."
+    elif any(w in combined for w in ["enterprises", "group", "holding", "مشاريع", "مجموعة"]) and act_lower in ["services", "business", "general", "خدمات", "اعمال"]:
+        clarification_needed = True
+        matched_cat = get_category_by_code("SERV_002")
+        clarification_q_en = f"The trade name '{norm_en}' and activity '{act_type}' are broad. Please specify the core products or services your business will provide."
+        clarification_q_ar = f"الاسم التجاري '{norm_ar or norm_en}' والنشاط '{act_type}' واسعا النطاق. يرجى توضيح المنتجات أو الخدمات الرئيسية."
+        mismatch_reason_en = f"Broad trade name and activity. Clarification needed regarding products and services provided."
+        mismatch_reason_ar = f"الاسم التجاري والنشاط عامان ويتطلبان توضيح نطاق المنتجات والخدمات."
+    elif any(w in combined for w in ["tech", "technologies", "software", "cloud", "digital"]) and act_lower in ["tech", "technology", "تقنية", "تكنولوجيا"]:
+        matched_cat = get_category_by_code("TECH_003")
+        mismatch_reason_en = f"'{act_type}' is a broad descriptor. Recommended specific activities: Software development, IT consultancy, or Technology services."
+        mismatch_reason_ar = f"'{act_type}' وصف عام. الأنشطة المحددة المعتمدة: تطوير البرمجيات، استشارات تقنية المعلومات، أو الخدمات التقنية."
+
+    status_str = "mismatch" if is_mismatch else ("clarification_needed" if clarification_needed else ("generic_activity" if act_lower in ["tech", "technology", "food", "services", "business"] else "match"))
+
+    return SuggestCategoryResponse(
+        status=status_str,
+        is_match=not is_mismatch,
+        mismatch_detected=is_mismatch,
+        clarification_needed=clarification_needed,
+        clarification_question_en=clarification_q_en,
+        clarification_question_ar=clarification_q_ar,
+        original_activity=act_type,
+        suggested_category_code=matched_cat["code"],
+        category_id=matched_cat["category_id"],
+        suggested_activity_type=matched_cat["representative_activities"][0] if matched_cat["representative_activities"] else matched_cat["name_en"],
+        suggested_activities=matched_cat["representative_activities"],
+        activity_categories=matched_cat.get("isic_codes", []),
+        recommended_trade_names=alt_names,
+        reason_en=mismatch_reason_en or f"Approved activity category aligned with {matched_cat['name_en']}.",
+        reason_ar=mismatch_reason_ar or f"فئة النشاط المعتمدة وفق {matched_cat['name_ar']}.",
+        verified=True,
+    )
 
 
 def _heuristic_transliterate(english_name: str) -> str:
@@ -725,43 +769,6 @@ async def transliterate_trade_name(
     )
 
 
-@router.post(
-    "/CheckTransliteration",
-    response_model=CheckTransliterationResponse,
-    summary="Validate transliteration consistency between Arabic and English forms (F7)",
-)
-async def check_transliteration(
-    request: CheckTransliterationRequest,
-    channel: str = Depends(get_current_channel),
-    db: AsyncSession = Depends(get_db),
-) -> CheckTransliterationResponse:
-    """POST TradeName/CheckTransliteration (spec §5.2, F7)."""
-    redis_client = _get_redis_client()
-    gateway = LlmGateway(session=db, redis_client=redis_client)
-    res = await gateway.check_transliteration(
-        request_id=f"chk-trans-{uuid.uuid4().hex[:8]}",
-        channel=channel,
-        name_ar=request.NameAr,
-        name_en=request.NameEn,
-        original_ar=request.OriginalNameAr,
-        original_en=request.OriginalNameEn,
-    )
-    if res:
-        return CheckTransliterationResponse(
-            consistent=res.consistent,
-            confidence=res.confidence,
-            expected_en=res.expected_en,
-            expected_ar=res.expected_ar,
-        )
-    return CheckTransliterationResponse(
-        consistent=True,
-        confidence=0.8,
-        expected_en=request.NameEn,
-        expected_ar=request.NameAr,
-    )
-
-
-
 @router.get(
     "/ReviewerBrief/{requestId}",
     response_model=ReviewerBriefResponse,
@@ -862,6 +869,9 @@ async def register_trade_name(
     norm_ar = normalize_arabic(request.name_ar) if request.name_ar else ""
     norm_en = normalize_english(request.name_en) if request.name_en else ""
 
+    primary_name = request.name_en or request.name_ar or ""
+    primary_name_ar = request.name_ar or request.name_en or ""
+
     index_repo = TradeNameIndexRepository(db)
 
     # 1. Check for Existing Trade Name (Source of truth DB check)
@@ -872,9 +882,6 @@ async def register_trade_name(
 
     if exact_matches:
         # Trade name already exists! Reject and generate suggestions.
-        primary_name = request.name_en or request.name_ar
-        primary_name_ar = request.name_ar or request.name_en
-
         # Generate brand-preserving, semantically relevant alternatives
         suggestions: list[SuggestionResponseItem] = []
         try:
@@ -906,6 +913,8 @@ async def register_trade_name(
             is_existing=True,
             trade_name_id=exact_matches[0].trade_name_id,
             reference_number=None,
+            name_ar=request.name_ar or "",
+            name_en=request.name_en or "",
             message_en=f"Trade name '{primary_name}' is already registered in the registry. Duplicate registrations are not permitted.",
             message_ar=f"الاسم التجاري '{primary_name_ar}' مسجل بالفعل في السجل التجاري ولا يمكن تكراره.",
             suggestions=suggestions,
@@ -966,13 +975,12 @@ async def register_trade_name(
             is_existing=True,
             trade_name_id=None,
             reference_number=None,
+            name_ar=request.name_ar or "",
+            name_en=request.name_en or "",
             message_en=f"Trade name '{primary_name}' already exists in the registry. Duplicate registration blocked.",
             message_ar=f"الاسم التجاري '{primary_name_ar}' مسجل مسبقاً في السجل التجاري ولا يمكن تكراره.",
             suggestions=fallback_sug,
         )
-
-    primary_name = request.name_en or request.name_ar
-    primary_name_ar = request.name_ar or request.name_en
 
     return RegisterTradeNameResponse(
         success=True,
@@ -980,6 +988,8 @@ async def register_trade_name(
         is_existing=False,
         trade_name_id=new_trade_name_id,
         reference_number=ref_no,
+        name_ar=request.name_ar or "",
+        name_en=request.name_en or "",
         message_en=f"Trade name '{primary_name}' has been successfully registered.",
         message_ar=f"تم تسجيل الاسم التجاري '{primary_name_ar}' بنجاح.",
         suggestions=[],

@@ -251,8 +251,85 @@ class TradeNameIndexRepository:
                 for r in rows
             ]
         except Exception:
-            # Fallback for testing environments without pg_trgm extension
+            # Fallback for environments without pg_trgm extension (e.g. SQLite / local dev)
+            import re
             from rapidfuzz import fuzz
+
+            def _trigrams(s: str) -> set[str]:
+                if not s:
+                    return set()
+                padded = f"  {s.strip().lower()}  "
+                return set(padded[i:i+3] for i in range(len(padded) - 2))
+
+            def _calc_trigram_sim(s1: str, s2: str) -> float:
+                t1 = _trigrams(s1)
+                t2 = _trigrams(s2)
+                if not t1 or not t2:
+                    return 0.0
+                return len(t1 & t2) / len(t1 | t2)
+
+            def _token_match(q_tok: str, c_tok: str) -> bool:
+                if q_tok == c_tok:
+                    return True
+                # Arabic prefix normalization (ال، و، ل، ب)
+                clean_q = re.sub(r"^(ال|و|ل|ب)", "", q_tok)
+                clean_c = re.sub(r"^(ال|و|ل|ب)", "", c_tok)
+                if clean_q and clean_c and (clean_q == clean_c or (len(clean_q) >= 3 and clean_q in clean_c) or (len(clean_c) >= 3 and clean_c in clean_q)):
+                    return True
+                # English substring containment or typo tolerance (>= 75% similarity)
+                if len(q_tok) >= 3 and len(c_tok) >= 3:
+                    if q_tok in c_tok or c_tok in q_tok:
+                        return True
+                    if fuzz.ratio(q_tok, c_tok) >= 75.0:
+                        return True
+                return False
+
+            def _score_query_against_candidate(query: str, target: str) -> float:
+                q_clean = query.strip().lower()
+                t_clean = target.strip().lower()
+                if not q_clean or not t_clean:
+                    return 0.0
+                if q_clean == t_clean:
+                    return 1.0
+
+                q_tokens = [w for w in re.findall(r"\w+", q_clean) if len(w) >= 2]
+                t_tokens = [w for w in re.findall(r"\w+", t_clean) if len(w) >= 2]
+                if not q_tokens or not t_tokens:
+                    return 0.0
+
+                matched_q = [qt for qt in q_tokens if any(_token_match(qt, tt) for tt in t_tokens)]
+                matched_t = [tt for tt in t_tokens if any(_token_match(qt, tt) for qt in q_tokens)]
+
+                if not matched_q:
+                    # No tokens matched - check pure edit distance / trigram for close typos
+                    tri = _calc_trigram_sim(q_clean, t_clean)
+                    ratio = fuzz.ratio(q_clean, t_clean) / 100.0
+                    if tri >= 0.25 or ratio >= 0.70:
+                        return round(max(tri, ratio), 4)
+                    return 0.0
+
+                # Symmetric, length-balanced token coverage
+                q_len_match = sum(len(w) for w in matched_q)
+                t_len_match = sum(len(w) for w in matched_t)
+                total_q_len = sum(len(w) for w in q_tokens)
+                total_t_len = sum(len(w) for w in t_tokens)
+
+                q_cov = q_len_match / total_q_len  # query coverage
+                t_cov = t_len_match / total_t_len  # target coverage
+
+                char_dice = (q_len_match + t_len_match) / (total_q_len + total_t_len)
+                ratio = fuzz.ratio(q_clean, t_clean) / 100.0
+                tri = _calc_trigram_sim(q_clean, t_clean)
+
+                score = 0.45 * q_cov + 0.35 * t_cov + 0.20 * max(tri, ratio, char_dice)
+
+                if q_cov >= 0.99 and t_cov >= 0.99:
+                    score = max(score, ratio)
+                else:
+                    score = min(0.88, score)
+
+                return round(score, 4)
+
             sql_fallback = f"""
                 SELECT id, trade_name_id, normalized_ar, normalized_en, phonetic_key,
                        category_id, status
@@ -267,28 +344,11 @@ class TradeNameIndexRepository:
             rows = result.fetchall()
             scored: list[IndexEntry] = []
             for r in rows:
-                score_ar = 0.0
-                if norm_ar_clean and r[2]:
-                    r2_clean = r[2].strip()
-                    if norm_ar_clean == r2_clean:
-                        score_ar = 1.0
-                    else:
-                        r_edit = fuzz.ratio(norm_ar_clean, r2_clean) / 100.0
-                        r_sort = fuzz.token_sort_ratio(norm_ar_clean, r2_clean) / 100.0
-                        score_ar = max(r_edit, r_sort)
-
-                score_en = 0.0
-                if norm_en_clean and r[3]:
-                    r3_clean = r[3].strip().lower()
-                    if norm_en_clean == r3_clean:
-                        score_en = 1.0
-                    else:
-                        r_edit = fuzz.ratio(norm_en_clean, r3_clean) / 100.0
-                        r_sort = fuzz.token_sort_ratio(norm_en_clean, r3_clean) / 100.0
-                        score_en = max(r_edit, r_sort)
-
+                score_ar = _score_query_against_candidate(norm_ar_clean, r[2] or "") if norm_ar_clean else 0.0
+                score_en = _score_query_against_candidate(norm_en_clean, r[3] or "") if norm_en_clean else 0.0
                 max_score = max(score_ar, score_en)
-                if max_score > 0.2:
+
+                if max_score > 0.0:
                     scored.append(
                         IndexEntry(
                             id=r[0],

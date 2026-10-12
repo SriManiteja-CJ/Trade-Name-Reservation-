@@ -20,7 +20,7 @@ const PRESETS = [
     cat: 1,
   },
   {
-    label: "Outside UAQ Branch (F10)",
+    label: "Outside UAQ Branch",
     nameAr: "مطعم الصقر",
     nameEn: "Falcon Restaurant",
     op: "branch",
@@ -28,7 +28,7 @@ const PRESETS = [
     outsideUaq: true,
   },
   {
-    label: "Legal Form Amend (F11/F12)",
+    label: "Legal Form Amend",
     nameAr: "شركة الأمل للتجارة",
     nameEn: "Al Amal Trading Co",
     op: "legal_form_amend",
@@ -194,7 +194,7 @@ export default function ValidationTab({ lang, channel, onValidationComplete, onN
 
         <form onSubmit={handleValidate} className="form-grid">
           <div className="form-group full-width">
-            <label>{isAr ? 'رقم الطلب (DED Request ID - N3)' : 'Application Request ID (DED Application No. - N3)'}</label>
+            <label>{isAr ? 'رقم طلب المعاملة' : 'Application Request ID'}</label>
             <input
               type="text"
               className="input-control"
@@ -205,7 +205,7 @@ export default function ValidationTab({ lang, channel, onValidationComplete, onN
           </div>
 
           <div className="form-group">
-            <label>{isAr ? 'الاسم التجاري بالعربية' : 'Arabic Trade Name (NameAr)'}</label>
+            <label>{isAr ? 'الاسم التجاري بالعربية' : 'Arabic Trade Name'}</label>
             <input
               type="text"
               className="input-control input-ar"
@@ -217,7 +217,7 @@ export default function ValidationTab({ lang, channel, onValidationComplete, onN
           </div>
 
           <div className="form-group">
-            <label>{isAr ? 'الاسم التجاري بالإنجليزية' : 'English Trade Name (NameEn)'}</label>
+            <label>{isAr ? 'الاسم التجاري بالإنجليزية' : 'English Trade Name'}</label>
             <input
               type="text"
               className="input-control"
@@ -235,7 +235,7 @@ export default function ValidationTab({ lang, channel, onValidationComplete, onN
               onClick={checkTransliteration}
               style={{ color: '#38bdf8', borderColor: 'rgba(56, 189, 248, 0.4)' }}
             >
-              🔍 {isAr ? 'فحص المطابقة الصوتية (F7)' : 'Quick Translit Check (F7)'}
+              🔍 {isAr ? 'فحص المطابقة الصوتية' : 'Quick Translit Check'}
             </button>
             <button
               type="button"
@@ -243,21 +243,21 @@ export default function ValidationTab({ lang, channel, onValidationComplete, onN
               onClick={suggestCategory}
               style={{ color: '#fbbf24', borderColor: 'rgba(251, 191, 36, 0.4)' }}
             >
-              🏷️ {isAr ? 'اقتراح النشاط التجاري (E6)' : 'Auto-Suggest Category (E6)'}
+              🏷️ {isAr ? 'اقتراح النشاط التجاري' : 'Auto-Suggest Category'}
             </button>
           </div>
 
           {/* Translit Banner */}
           {translitResult && (
             <div className="full-width" style={{ background: 'rgba(15, 23, 42, 0.6)', padding: '10px', borderRadius: '6px', border: '1px solid rgba(56, 189, 248, 0.3)', fontSize: '12px' }}>
-              <strong>{isAr ? 'نتيجة فحص التعريب (F7):' : 'Transliteration Verdict (F7):'}</strong> {translitResult.consistent ? '✅ متطابق (Consistent)' : '⚠️ غير متطابق (Inconsistent)'} • {isAr ? 'نسبة الثقة:' : 'Confidence:'} {Math.round(translitResult.confidence * 100)}%
+              <strong>{isAr ? 'نتيجة فحص التعريب:' : 'Transliteration Verdict:'}</strong> {translitResult.consistent ? '✅ متطابق (Consistent)' : '⚠️ غير متطابق (Inconsistent)'} • {isAr ? 'نسبة الثقة:' : 'Confidence:'} {Math.round(translitResult.confidence * 100)}%
             </div>
           )}
 
           {/* Category Banner */}
           {catResult && (
             <div className="full-width" style={{ background: 'rgba(15, 23, 42, 0.6)', padding: '10px', borderRadius: '6px', border: '1px solid rgba(251, 191, 36, 0.3)', fontSize: '12px' }}>
-              <strong>{isAr ? 'النشاط المقترح (E6):' : 'Suggested Activity Category (E6):'}</strong> <span style={{ color: '#fbbf24', fontWeight: 700 }}>{catResult.suggested_category_code}</span> • {isAr ? catResult.reason_ar : catResult.reason_en}
+              <strong>{isAr ? 'النشاط المقترح:' : 'Suggested Activity Category:'}</strong> <span style={{ color: '#fbbf24', fontWeight: 700 }}>{catResult.suggested_category_code}</span> • {isAr ? catResult.reason_ar : catResult.reason_en}
             </div>
           )}
 
@@ -272,7 +272,7 @@ export default function ValidationTab({ lang, channel, onValidationComplete, onN
               <option value="edit">Edit Trade Name (تعديل اسم)</option>
               <option value="renew">Renewal (تجديد رخصة)</option>
               <option value="branch">Branch Office (فرع رخصة)</option>
-              <option value="legal_form_amend">Legal Form Amendment (F11 تعديل الشكل)</option>
+              <option value="legal_form_amend">Legal Form Amendment (تعديل الشكل القانوني)</option>
             </select>
           </div>
 
@@ -298,7 +298,7 @@ export default function ValidationTab({ lang, channel, onValidationComplete, onN
           </div>
 
           <div className="form-group">
-            <label>{isAr ? 'استثناء معرف الاسم (F2)' : 'Exclude Current Record ID (F2)'}</label>
+            <label>{isAr ? 'استثناء معرف الاسم الحالي' : 'Exclude Current Record ID'}</label>
             <input
               type="number"
               className="input-control"
@@ -308,7 +308,7 @@ export default function ValidationTab({ lang, channel, onValidationComplete, onN
             />
           </div>
 
-          {/* F10 Branch Outside UAQ Checkbox */}
+          {/* Branch Outside UAQ Checkbox */}
           <div className="form-group full-width">
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '12px' }}>
               <input
@@ -316,19 +316,19 @@ export default function ValidationTab({ lang, channel, onValidationComplete, onN
                 checked={isOutsideUaq}
                 onChange={(e) => setIsOutsideUaq(e.target.checked)}
               />
-              <span>{isAr ? 'فرع خارج أم القيوين (تطبيق لاحقة F10 تلقائياً: فرع أم القيوين)' : 'Branch outside UAQ (Applies F10 suffix: "Umm Al Quwain Branch")'}</span>
+              <span>{isAr ? 'فرع خارج أم القيوين (تطبيق لاحقة "فرع أم القيوين" تلقائياً)' : 'Branch outside UAQ (Applies suffix "Umm Al Quwain Branch")'}</span>
             </label>
           </div>
 
-          {/* F11 Amendment specific inputs */}
+          {/* Amendment specific inputs */}
           {opType === 'legal_form_amend' && (
             <div className="full-width form-grid" style={{ background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '8px' }}>
               <div className="form-group">
-                <label>{isAr ? 'الشكل القانوني السابق (F11)' : 'Old Legal Form (F11)'}</label>
+                <label>{isAr ? 'الشكل القانوني السابق' : 'Old Legal Form'}</label>
                 <input type="text" className="input-control" value={oldLegalForm} onChange={(e) => setOldLegalForm(e.target.value)} placeholder="e.g. LLC" />
               </div>
               <div className="form-group">
-                <label>{isAr ? 'الشكل القانوني الجديد (F11)' : 'New Legal Form (F11)'}</label>
+                <label>{isAr ? 'الشكل القانوني الجديد' : 'New Legal Form'}</label>
                 <input type="text" className="input-control" value={newLegalForm} onChange={(e) => setNewLegalForm(e.target.value)} placeholder="e.g. PJSC" />
               </div>
             </div>
@@ -438,17 +438,17 @@ export default function ValidationTab({ lang, channel, onValidationComplete, onN
           </div>
         )}
 
-        {/* AI & Deterministic Suggestions (F8, F9, F17 UPPERCASE) */}
+        {/* AI & Deterministic Suggestions */}
         {result && result.suggestions && result.suggestions.length > 0 && (
           <div className="card">
             <div className="card-header" style={{ marginBottom: '8px' }}>
               <h3 className="card-title" style={{ color: '#38bdf8' }}>
-                ✨ {isAr ? 'الأسماء البديلة المقترحة (F8, F9, F17)' : 'AI Trade Name Suggestions'}
+                ✨ {isAr ? 'الأسماء البديلة المقترحة' : 'AI Trade Name Suggestions'}
               </h3>
-              <span className="badge badge-info">Stage ⑥</span>
+              <span className="badge badge-info">{isAr ? 'اقتراحات ذكية' : 'Smart Suggestions'}</span>
             </div>
             <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '10px' }}>
-              {isAr ? 'أسماء مميزة وغير محجوزة. اضغط "استخدام الاسم" لتطبيقه مباشرة.' : 'Distinct, unreserved alternatives (F9, F18). English in UPPER CASE (F17). Click "Use Name" to apply.'}
+              {isAr ? 'أسماء مميزة وغير محجوزة. اضغط "استخدام الاسم" لتطبيقه مباشرة.' : 'Distinct, unreserved alternatives. Click "Use Name" to apply.'}
             </p>
             <div className="suggestions-grid">
               {result.suggestions.map((s, i) => (
@@ -474,11 +474,11 @@ export default function ValidationTab({ lang, channel, onValidationComplete, onN
           </div>
         )}
 
-        {/* Legacy API Inspector (N9) */}
+        {/* Standard API Inspector */}
         <div className="card">
           <div className="card-header">
-            <h3 className="card-title">{isAr ? 'عقد استجابة النظام القديم (N9)' : 'Legacy DED API Response Contract (N9)'}</h3>
-            <span className="badge badge-info">Additive</span>
+            <h3 className="card-title">{isAr ? 'عقد استجابة النظام الأساسي' : 'Standard DED API Response Contract'}</h3>
+            <span className="badge badge-info">{isAr ? 'توافق كامل' : 'Full Compatibility'}</span>
           </div>
           <div className="legacy-grid">
             <div className="legacy-item">

@@ -8,6 +8,7 @@ import LexiconTab from './components/LexiconTab';
 import ReviewerCopilotTab from './components/ReviewerCopilotTab';
 import SettingsTab from './components/SettingsTab';
 import ValidationTab from './components/ValidationTab';
+import WorkManagementTab from './components/WorkManagementTab';
 import { API_BASE } from './config';
 
 export default function App() {
@@ -66,9 +67,17 @@ export default function App() {
             />
           )}
 
+          {activeNav === 'work' && (
+            <WorkManagementTab
+              lang={lang}
+              onNavigateCopilot={handleNavigateToCopilot}
+            />
+          )}
+
           {activeNav === 'search' && (
             <RegistrySearchTab
               lang={lang}
+              channel="portal"
             />
           )}
 

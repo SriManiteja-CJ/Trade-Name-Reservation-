@@ -318,31 +318,74 @@ def build_transliteration_user_message(
     )
 
 
-DEFAULT_CATEGORY_SYSTEM_PROMPT = """You are a business activity classification specialist for DED Umm Al Quwain.
+DEFAULT_CATEGORY_SYSTEM_PROMPT = """You are the Lead Business Activity Intelligence and Registrar Officer for DED Umm Al Quwain.
+Analyze the user's trade name and entered/selected business activity against the 10 official UAE economic activity categories:
 
-Given a submitted trade name (Arabic and English), recommend the most appropriate UAE activity category code (E6).
-Standard Category Codes:
-- COMM_001: Commercial & General Trading
-- SERV_002: Professional Services & Consultancy
-- TECH_003: Information Technology & Software
-- REST_004: Food, Beverages & Restaurants
-- REAL_005: Real Estate & Property Management
-- CONT_006: Construction & Contracting
-- INDU_007: Industrial & Manufacturing
-- TOUR_008: Tourism & Travel
+OFFICIAL CATEGORIES:
+1. COMM_001 (Commercial & Trading): General trading, Import/export, Wholesale trade, Retail trade, Foodstuff & Beverage Trading, Cafe and Restaurant Operations
+2. SERV_002 (Consulting & Professional Services): Management consultancy, Business consultancy, Professional advisory services, Corporate Services & Auditing
+3. TECH_003 (IT & Technology): Software development, IT consultancy, Technology services, Cloud computing & Data hosting, Artificial Intelligence & Cyber Security
+4. ECOM_004 (E-Commerce): Online retail, Electronic trading, E-Commerce portal operations, Drop-shipping & Online Fulfillment
+5. MKTG_005 (Digital Marketing & Advertising): Digital marketing, Advertising services, Marketing consultancy, Public Relations & Media Buying
+6. MDIA_006 (Media & Creative): Content creation, Media production, Creative services, Graphic Design & Photography
+7. INDU_007 (Industrial & Manufacturing): Manufacturing, Processing, Production, Assembly
+8. LOGS_008 (Logistics & Warehousing): Storage, Distribution, Logistics services, Courier & Delivery Services
+9. EDUC_009 (Education & Training): Professional training, Tutoring, Educational services, Corporate Training & Workshops
+10. FREE_010 (Freelance & Independent Services): Digital services, Technical services, Creative services, Professional freelance activities
 
-Return ONLY a valid JSON object:
-{"suggested_category_code": string, "confidence": float, "reason_en": string, "reason_ar": string}
+DETECTION & REASONING RULES:
+1. MISMATCH DETECTION: If the trade name indicates one business type (e.g. "Teja Cafe" -> cafe/food) while the selected activity indicates an incompatible field (e.g. "Technology"):
+   - status = "mismatch"
+   - is_match = false
+   - mismatch_detected = true
+   - Explain why the name and activity conflict.
+   - Recommend the correct official category (e.g. COMM_001) and specific approved activity type (e.g. "Cafe and Restaurant Operations").
+2. GENERIC ACTIVITY INTERPRETATION: If the user provides a broad term (e.g. "Technology", "Food", "Trading", "Services", "Business", "Consultancy"):
+   - status = "generic_activity"
+   - Refine it into the specific, approved activity types supported by the catalogue.
+3. CLARIFICATION ON AMBIGUITY: If the trade name or scope is broad or could span multiple distinct operations (e.g. "Teja Foods" with generic "Business", or "TJ Enterprises" with "Services"):
+   - status = "clarification_needed"
+   - clarification_needed = true
+   - Formulate a polite, focused clarification question in both English and Arabic asking the user to choose their exact operational scope.
+4. SUGGEST REFINED TRADE NAMES: If the trade name is unclear, requires refinement, or user had a mismatch, provide 2-3 suitable alternative trade names preserving their brand identity.
+
+RETURN ONLY A VALID JSON OBJECT:
+{
+  "status": "match" | "mismatch" | "generic_activity" | "clarification_needed",
+  "is_match": boolean,
+  "mismatch_detected": boolean,
+  "clarification_needed": boolean,
+  "clarification_question_en": string or null,
+  "clarification_question_ar": string or null,
+  "recommended_category_code": string,
+  "recommended_category_id": number,
+  "recommended_category_name_en": string,
+  "recommended_category_name_ar": string,
+  "recommended_activity_type": string,
+  "available_activity_types": [string],
+  "recommended_trade_names": [{"name_en": string, "name_ar": string}],
+  "reason_en": string,
+  "reason_ar": string
+}
 """
 
 
-def build_category_user_message(name_ar: str, name_en: str) -> str:
-    """Build user message for SuggestCategory endpoint (E6)."""
+def build_category_user_message(
+    name_ar: str,
+    name_en: str,
+    activity_type: Optional[str] = None,
+    user_context: Optional[str] = None,
+) -> str:
+    """Build user message for SuggestCategory endpoint with activity mismatch context."""
+    act_line = f"ENTERED / SELECTED ACTIVITY: {activity_type or 'None specified'}\n"
+    ctx_line = f"USER CLARIFICATION CONTEXT: {user_context}\n" if user_context else ""
     return (
-        "Identify the most fitting business activity category for this trade name:\n\n"
-        f"ARABIC NAME: <trade_name>{name_ar}</trade_name>\n"
-        f"ENGLISH NAME: <trade_name>{name_en}</trade_name>\n\n"
-        "Return the suggested category code with bilingual explanation as JSON."
+        "Analyze this trade name and business activity for logical consistency, category classification, and potential mismatches:\n\n"
+        f"ARABIC NAME: <trade_name>{name_ar or 'None'}</trade_name>\n"
+        f"ENGLISH NAME: <trade_name>{name_en or 'None'}</trade_name>\n"
+        f"{act_line}"
+        f"{ctx_line}\n"
+        "Return the structured JSON recommendation."
     )
 
 

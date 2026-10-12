@@ -152,12 +152,12 @@ export default function LexiconTab({ lang }) {
                 <span>🤖</span>
                 <span>{isAr ? 'توليد أشكال التحايل والتهجئة الذكي' : 'AI Evasion & Variant Generator'}</span>
               </h2>
-              <span className="badge badge-gold">Stage ⑨ • E7</span>
+              <span className="badge badge-gold">{isAr ? 'توليد ذكي' : 'AI Generator'}</span>
             </div>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '16px' }}>
               {isAr
-                ? 'استخدام نموذج الذكاء الاصطناعي (Stage ⑨) لتوليد أشكال التحايل الصوتي، الحروف الإنجليزية المعربة (Arabizi)، والأخطاء الإملائية الشائعة مع إلزامية المراجعة البشرية.'
-                : 'Generates phonetic, typo, and Arabizi evasion variants for restricted terms. Requires human governance before inclusion (E7).'}
+                ? 'استخدام نموذج الذكاء الاصطناعي لتوليد أشكال التحايل الصوتي، الحروف الإنجليزية المعربة (Arabizi)، والأخطاء الإملائية الشائعة مع إلزامية المراجعة البشرية.'
+                : 'Generates phonetic, typo, and Arabizi evasion variants for restricted terms. Requires human governance before inclusion.'}
             </p>
 
             <form onSubmit={handleGenerateVariants}>
@@ -174,7 +174,7 @@ export default function LexiconTab({ lang }) {
 
               <div className="form-row" style={{ marginTop: '12px' }}>
                 <div className="form-group">
-                  <label className="form-label">{isAr ? 'الفئة الرقابية (F4):' : 'Restricted Category (F4):'}</label>
+                  <label className="form-label">{isAr ? 'الفئة الرقابية:' : 'Restricted Category:'}</label>
                   <select
                     className="form-input"
                     value={category}

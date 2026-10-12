@@ -188,6 +188,14 @@ class LlmGateway:
             timeout=httpx.Timeout(cfg.llm_timeout_seconds),
         )
 
+    async def aclose(self) -> None:
+        """Close the underlying HTTP client."""
+        await self._http_client.aclose()
+
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
+        await self._http_client.aclose()
+
     async def analyze(
         self,
         *,
@@ -721,9 +729,11 @@ class LlmGateway:
         channel: str,
         name_ar: str,
         name_en: str,
-    ) -> Optional[CategorySuggestionOutput]:
+        activity_type: Optional[str] = None,
+        user_context: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
         """
-        Suggest activity category based on trade name (E6).
+        Suggest activity category based on trade name and entered activity, detecting mismatches (E6).
         """
         from llm.prompts import (
             DEFAULT_CATEGORY_SYSTEM_PROMPT,
@@ -735,7 +745,12 @@ class LlmGateway:
         if not _circuit_breaker.is_available():
             return None
 
-        user_message = build_category_user_message(name_ar=name_ar, name_en=name_en)
+        user_message = build_category_user_message(
+            name_ar=name_ar,
+            name_en=name_en,
+            activity_type=activity_type,
+            user_context=user_context,
+        )
 
         cfg = get_settings()
         payload = {
@@ -745,11 +760,11 @@ class LlmGateway:
                 {"role": "user", "content": user_message},
             ],
             "temperature": 0,
-            "max_tokens": 512,
-            "response_format": _format_response_format(CategorySuggestionOutput.model_json_schema()),
+            "max_tokens": 400,
+            "response_format": {"type": "json_object"},
         }
 
-        output: Optional[CategorySuggestionOutput] = None
+        output: Optional[dict[str, Any]] = None
         latency_ms = None
         tokens = None
         raw_dict = None
@@ -766,7 +781,7 @@ class LlmGateway:
                 tokens = usage.get("total_tokens")
                 content = resp_json["choices"][0]["message"]["content"]
                 raw_dict = json.loads(content)
-                output = CategorySuggestionOutput.model_validate(raw_dict)
+                output = raw_dict
                 outcome_label = "success"
                 _circuit_breaker.record_success()
             else:
@@ -781,7 +796,7 @@ class LlmGateway:
             request_id=request_id,
             channel=channel,
             input_hash=input_hash,
-            prompt_version="category_v1",
+            prompt_version="category_v2",
             outcome=outcome_label,
             raw_output=raw_dict,
             latency_ms=latency_ms,
@@ -968,23 +983,28 @@ class LlmGateway:
         tokens: Optional[int],
     ) -> None:
         """Write an AiDecisionAudit row. Failures are logged but never propagate (N3)."""
+        if not self.session:
+            return
         try:
-            audit_repo = AuditRepository(self.session)
-            await audit_repo.record_audit(
-                request_id=request_id,
-                channel=channel,
-                input_hash=input_hash,
-                prompt_version=prompt_version,
-                model_id=settings.vllm_analyzer_model,
-                outcome=outcome,
-                raw_output=raw_output,
-                latency_ms=latency_ms,
-                tokens=tokens,
-            )
+            async with self.session.begin_nested():
+                audit_repo = AuditRepository(self.session)
+                await asyncio.wait_for(
+                    audit_repo.record_audit(
+                        request_id=request_id,
+                        channel=channel,
+                        input_hash=input_hash,
+                        prompt_version=prompt_version,
+                        model_id=settings.effective_analyzer_model,
+                        outcome=outcome,
+                        raw_output=raw_output,
+                        latency_ms=latency_ms,
+                        tokens=tokens,
+                    ),
+                    timeout=1.0,
+                )
         except Exception as audit_err:
-            # Audit failure must NEVER affect the validation path (N3)
-            logger.error(
-                "audit_write_failed",
+            logger.warning(
+                "audit_write_failed_or_timed_out",
                 extra={"request_id": request_id, "error": str(audit_err)}
             )
 

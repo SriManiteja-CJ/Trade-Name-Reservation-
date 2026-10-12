@@ -28,7 +28,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     Application lifespan context manager for startup and shutdown events.
     """
-    # Startup: ensure DB engine can initialize
+    # Startup: ensure DB engine can initialize and tables exist
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception:
+        pass
     yield
     # Shutdown: dispose DB engine cleanly
     await engine.dispose()

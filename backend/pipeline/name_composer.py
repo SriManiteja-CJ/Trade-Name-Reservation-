@@ -144,14 +144,49 @@ def compose(
     # The modified name is then checked for conflicts in Stage ②.
     # -----------------------------------------------------------------------
     if operation_type == "legal_form_amend" and old_legal_form is not None:
+        _LF_EN_TO_AR = {
+            "llc": "ذ.م.م",
+            "l.l.c": "ذ.م.م",
+            "limited liability company": "ذات مسؤولية محدودة",
+            "pjsc": "ش.م.ع",
+            "public joint stock company": "شركة مساهمة عامة",
+            "psc": "ش.م.خ",
+            "private shareholding company": "شركة مساهمة خاصة",
+            "sole proprietorship": "مؤسسة فردية",
+            "sole establishment": "مؤسسة فردية",
+            "civil company": "شركة مدنية",
+        }
+        _LF_AR_TO_EN = {
+            "ذ.م.م": "LLC",
+            "ذات مسئوليه محدوده": "Limited Liability Company",
+            "ذات مسؤولية محدودة": "Limited Liability Company",
+            "ش.م.ع": "PJSC",
+            "شركه مساهمه عامه": "Public Joint Stock Company",
+            "شركة مساهمة عامة": "Public Joint Stock Company",
+            "ش.م.خ": "PSC",
+            "شركه مساهمه خاصه": "Private Shareholding Company",
+            "شركة مساهمة خاصة": "Private Shareholding Company",
+            "مؤسسه فرديه": "Sole Proprietorship",
+            "مؤسسة فردية": "Sole Proprietorship",
+            "شركه مدنيه": "Civil Company",
+            "شركة مدنية": "Civil Company",
+        }
+
         # Remove old legal-form token from both names
         if old_legal_form:
-            effective_ar = effective_ar.replace(old_legal_form, "").strip()
-            effective_en = effective_en.replace(old_legal_form, "").strip()
-        # Append new legal form if provided
+            old_lf_lower = old_legal_form.strip().lower()
+            old_ar = _LF_EN_TO_AR.get(old_lf_lower, old_legal_form)
+            old_en = _LF_AR_TO_EN.get(old_legal_form.strip(), old_legal_form)
+            effective_ar = effective_ar.replace(old_ar, "").replace(old_legal_form, "").strip()
+            effective_en = effective_en.replace(old_en, "").replace(old_legal_form, "").strip()
+
+        # Append new legal form in respective language if provided
         if new_legal_form:
-            effective_ar = f"{effective_ar} {new_legal_form}".strip()
-            effective_en = f"{effective_en} {new_legal_form}".strip()
+            new_lf_lower = new_legal_form.strip().lower()
+            new_ar = _LF_EN_TO_AR.get(new_lf_lower, new_legal_form)
+            new_en = _LF_AR_TO_EN.get(new_legal_form.strip(), new_legal_form)
+            effective_ar = f"{effective_ar} {new_ar}".strip()
+            effective_en = f"{effective_en} {new_en}".strip()
 
     # -----------------------------------------------------------------------
     # F10 — Outside-UAQ branch: append suffix BEFORE gate checks

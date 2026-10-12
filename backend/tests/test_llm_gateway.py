@@ -13,6 +13,7 @@ Spec references validated:
 """
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
@@ -20,6 +21,12 @@ import httpx
 
 from llm.gateway import CircuitBreaker, CircuitState, LlmGateway, _make_cache_key
 from llm.schemas import LlmAnalyzerOutput
+
+@pytest.fixture(autouse=True)
+def reset_circuit_breaker():
+    from llm import gateway as gw_module
+    gw_module._circuit_breaker.record_success()
+    yield
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +75,12 @@ def _mock_session():
     session = AsyncMock()
     session.add = MagicMock()
     session.flush = AsyncMock()
+    
+    @asynccontextmanager
+    async def mock_begin_nested():
+        yield MagicMock()
+        
+    session.begin_nested = mock_begin_nested
     return session
 
 
