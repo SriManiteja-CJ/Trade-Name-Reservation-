@@ -1,11 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import FigmaHeroBanner from './FigmaHeroBanner';
-import FigmaSummaryPanel from './FigmaSummaryPanel';
+import HeroBanner from './HeroBanner';
+import SummaryPanel from './SummaryPanel';
 import AnalyzingModal from './AnalyzingModal';
 import ParentLicenseModal from './ParentLicenseModal';
 import ReviewConfirmationModal from './ReviewConfirmationModal';
 import { API_BASE } from '../config';
-import { fetchArabicTransliteration, quickClientFallback } from '../utils/arabicTransliteration';
+import {
+  fetchArabicTransliteration,
+  fetchEnglishTransliteration,
+  quickClientFallback,
+  quickClientFallbackArToEn,
+} from '../utils/arabicTransliteration';
 
 export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) {
   // Main Selection: 'new' (New Licence inside UAQ) vs 'branch' (Branch outside UAQ)
@@ -35,11 +40,13 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
   const [formValidationError, setFormValidationError] = useState(null);
 
   // Dynamic Form Fields for New Licence (Requirement 5 - No Hardcoded Values)
-  const [legalType, setLegalType] = useState('LIMITED LIABILITY COMPANY');
+  const [legalType, setLegalType] = useState('Limited Liability Company');
   const [activityType, setActivityType] = useState('');
   const [englishTradeName, setEnglishTradeName] = useState('');
   const [arabicTradeName, setArabicTradeName] = useState('');
+  const [lastEditedSource, setLastEditedSource] = useState(null); // 'en' | 'ar' | null
   const [isArabicManuallyEdited, setIsArabicManuallyEdited] = useState(false);
+  const [isEnglishManuallyEdited, setIsEnglishManuallyEdited] = useState(false);
   const [categoryId, setCategoryId] = useState(4);
 
   // Dynamic AI Suggestions and Category Recommendations (Requirement 6 & 7)
@@ -69,7 +76,7 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
     tradeNameAr: '',
     licenceNumber: '',
     issuingEmirate: 'Dubai',
-    legalType: 'Limited liability company',
+    legalType: 'Limited Liability Company',
     licenceType: 'Commercial',
     issuanceDate: '',
     expiryDate: '',
@@ -85,55 +92,151 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
   const [exploreFilter, setExploreFilter] = useState('best'); // 'best' | 'style'
   const [activityFilter, setActivityFilter] = useState('best'); // 'best' | 'style'
 
-  // Requirement 4: Auto-dismiss notifications after 5 seconds lifecycle
+  // Requirement 4: Auto-dismiss transient notifications, but maintain registered/blocked alerts until user action
   useEffect(() => {
-    if (validationStatus !== 'idle' || registrationError || formValidationError) {
+    if (validationStatus === 'available' || formValidationError) {
       const timer = setTimeout(() => {
-        setValidationStatus('idle');
-        setRegistrationError(null);
+        if (validationStatus === 'available') setValidationStatus('idle');
         setFormValidationError(null);
       }, 5000);
       return () => clearTimeout(timer);
     }
-  }, [validationStatus, registrationError, formValidationError]);
+  }, [validationStatus, formValidationError]);
 
-  // AI-Powered Real-time Transliteration Debounce (Industry Best Practice)
+  // AI-Powered Real-time Bidirectional Transliteration Debounce (Industry Best Practice)
   useEffect(() => {
-    if (isArabicManuallyEdited) return;
-    const trimmed = englishTradeName.trim();
-    if (!trimmed) {
-      setArabicTradeName('');
+    if (lastEditedSource === 'en') {
+      if (isArabicManuallyEdited) return;
+      const trimmed = englishTradeName.trim();
+      if (!trimmed) {
+        setArabicTradeName('');
+        return;
+      }
+
+      // 350ms debounce before requesting LLM DED-compliant Arabic transliteration
+      const timer = setTimeout(async () => {
+        try {
+          const arabic = await fetchArabicTransliteration(trimmed);
+          if (arabic && !isArabicManuallyEdited) {
+            setArabicTradeName(arabic);
+          }
+        } catch (err) {
+          console.warn('AI Transliteration EN->AR fetch error:', err);
+        }
+      }, 350);
+
+      return () => clearTimeout(timer);
+    } else if (lastEditedSource === 'ar') {
+      if (isEnglishManuallyEdited) return;
+      const trimmed = arabicTradeName.trim();
+      if (!trimmed) {
+        setEnglishTradeName('');
+        return;
+      }
+
+      // 350ms debounce before requesting LLM DED-compliant English transliteration
+      const timer = setTimeout(async () => {
+        try {
+          const english = await fetchEnglishTransliteration(trimmed);
+          if (english && !isEnglishManuallyEdited) {
+            setEnglishTradeName(english);
+          }
+        } catch (err) {
+          console.warn('AI Transliteration AR->EN fetch error:', err);
+        }
+      }, 350);
+
+      return () => clearTimeout(timer);
+    }
+  }, [englishTradeName, arabicTradeName, lastEditedSource, isArabicManuallyEdited, isEnglishManuallyEdited]);
+
+  // Helper to fetch verified unreserved suggestions for a trade name
+  const fetchSuggestionsForName = async (nameEn, nameAr, catId) => {
+    try {
+      const payload = {
+        RequestId: `UAQ-SUG-${Date.now()}`,
+        NameAr: nameAr || '',
+        NameEn: nameEn || '',
+        ActivityCategory: catId || categoryId || 4,
+        LegalForm: legalType,
+        OperationType: 'new',
+        IsOutsideUaq: false,
+      };
+      const valResp = await fetch(`${API_BASE}/TradeName/ValidateWithSuggestion`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept-Language': isAr ? 'ar' : 'en',
+        },
+        body: JSON.stringify(payload),
+      });
+      if (valResp.ok) {
+        const data = await valResp.json();
+        setApiSuggestions(data);
+      }
+    } catch (e) {
+      console.warn('Auto suggestions fetch error:', e);
+    }
+  };
+
+  // Real-time Database Registry Availability Check (Debounce 450ms)
+  useEffect(() => {
+    const trimmedEn = (englishTradeName || '').trim();
+    const trimmedAr = (arabicTradeName || '').trim();
+    if (trimmedEn.length < 3 && trimmedAr.length < 3) {
       return;
     }
 
-    // 350ms debounce before requesting LLM DED-compliant transliteration
     const timer = setTimeout(async () => {
       try {
-        const arabic = await fetchArabicTransliteration(trimmed);
-        if (arabic && !isArabicManuallyEdited) {
-          setArabicTradeName(arabic);
+        const params = new URLSearchParams();
+        if (trimmedEn) params.append('NameEn', trimmedEn);
+        if (trimmedAr) params.append('NameAr', trimmedAr);
+        if (categoryId) params.append('CategoryId', categoryId);
+
+        const res = await fetch(`${API_BASE}/TradeName/IsTradeNameExist?${params.toString()}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.Exists) {
+            setValidationStatus('registered');
+            const takenName = data.MatchedNameEn || data.MatchedNameAr || trimmedEn || trimmedAr;
+            setMatchedRegisteredName(takenName);
+            setRegistrationError(
+              isAr
+                ? `الاسم التجاري "${takenName}" مسجل بالفعل كاسم نشط في السجل التجاري ضمن هذا النشاط. تم اقتراح بدائل غير محجوزة أدناه.`
+                : `Trade name "${takenName}" is already registered in the official registry under this activity. Distinct unreserved suggestions are available below.`
+            );
+            fetchSuggestionsForName(trimmedEn, trimmedAr, categoryId || 4);
+          } else {
+            setValidationStatus('available');
+            setRegistrationError(null);
+          }
         }
       } catch (err) {
-        console.warn('AI Transliteration fetch error:', err);
+        console.warn('Real-time registry check error:', err);
       }
-    }, 350);
+    }, 450);
 
     return () => clearTimeout(timer);
-  }, [englishTradeName, isArabicManuallyEdited]);
+  }, [englishTradeName, arabicTradeName, categoryId, isAr]);
 
   // Input change handlers: clear stale notifications immediately upon new user input
   const handleEnglishNameChange = (e) => {
     const val = e.target.value;
     setEnglishTradeName(val);
+    setLastEditedSource('en');
     setValidationStatus('idle');
     setRegistrationError(null);
     setFormValidationError(null);
 
-    // Provide instant responsive phonetic feedback while typing; AI debounce refines to official legal Arabic
-    if (!isArabicManuallyEdited) {
-      if (!val.trim()) {
+    // Provide instant responsive feedback while typing; AI debounce refines to official legal Arabic
+    if (!val.trim()) {
+      setIsEnglishManuallyEdited(false);
+      if (!isArabicManuallyEdited) {
         setArabicTradeName('');
-      } else {
+      }
+    } else {
+      if (!isArabicManuallyEdited) {
         setArabicTradeName(quickClientFallback(val));
       }
     }
@@ -142,11 +245,22 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
   const handleArabicNameChange = (e) => {
     const val = e.target.value;
     setArabicTradeName(val);
-    // Mark as manually edited if user types custom text; re-enable autofill if cleared
-    setIsArabicManuallyEdited(val.trim().length > 0);
+    setLastEditedSource('ar');
     setValidationStatus('idle');
     setRegistrationError(null);
     setFormValidationError(null);
+
+    // Provide instant responsive feedback while typing; AI debounce refines to official legal English
+    if (!val.trim()) {
+      setIsArabicManuallyEdited(false);
+      if (!isEnglishManuallyEdited) {
+        setEnglishTradeName('');
+      }
+    } else {
+      if (!isEnglishManuallyEdited) {
+        setEnglishTradeName(quickClientFallbackArToEn(val));
+      }
+    }
   };
 
   // Trigger AI Analysis and Database Validation
@@ -167,11 +281,27 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
 
     try {
       if (tradeNameType === 'new') {
+        let activeCatId = categoryId;
+        if (activityType.trim() && officialCategories.length > 0) {
+          const actLower = activityType.toLowerCase().trim();
+          const matched = officialCategories.find(c =>
+            (c.name_en && c.name_en.toLowerCase() === actLower) ||
+            (c.name_ar && c.name_ar === activityType.trim()) ||
+            (c.representative_activities && c.representative_activities.some(a => 
+              a.toLowerCase() === actLower || a.toLowerCase().includes(actLower) || actLower.includes(a.toLowerCase())
+            ))
+          );
+          if (matched) {
+            activeCatId = matched.category_id;
+            setCategoryId(activeCatId);
+          }
+        }
+
         const payload = {
           RequestId: `UAQ-REQ-${Date.now()}`,
           NameAr: arabicTradeName.trim(),
           NameEn: englishTradeName.trim(),
-          ActivityCategory: categoryId || 4,
+          ActivityCategory: activeCatId || 4,
           LegalForm: legalType,
           OperationType: 'new',
           IsOutsideUaq: false,
@@ -234,15 +364,22 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
           const data = await valResp.json();
           setApiSuggestions(data);
 
-          // Check if exact trade name already exists in the registry database (Requirement 2)
+          // Check if trade name is duplicate or confusingly similar in this activity type (Requirements 1, 2, 6)
           if (data.is_existing || (data.reasons && data.reasons.some(r => r.category === 'exact_duplicate')) || data.decision === 'BLOCKED') {
             setValidationStatus('registered');
             const takenName = data.matched_name_en || data.matched_name_ar || englishTradeName || arabicTradeName;
             setMatchedRegisteredName(takenName);
             setRegistrationError(
               isAr
-                ? `الاسم التجاري "${takenName}" مسجل بالفعل كاسم نشط في السجل التجاري. تم اقتراح بدائل مناسبة أدناه.`
-                : `Trade name "${takenName}" already exists in the registry as an active name. Relevant alternative suggestions are displayed below.`
+                ? `الاسم التجاري "${takenName}" مسجل بالفعل كاسم نشط ضمن هذا النشاط التجاري. تم التحقق واقتراح بدائل مناسبة أدناه.`
+                : `Trade name "${takenName}" is already registered under this activity type. Verified alternative suggestions are displayed below.`
+            );
+          } else if (data.decision === 'NEEDS_REVIEW' && data.reasons && data.reasons.some(r => r.category === 'similar_name' || r.category === 'confusingly_similar')) {
+            setValidationStatus('registered');
+            const simReason = data.reasons.find(r => r.category === 'similar_name' || r.category === 'confusingly_similar');
+            setMatchedRegisteredName(englishTradeName || arabicTradeName);
+            setRegistrationError(
+              isAr ? simReason.reason_ar : simReason.reason_en
             );
           } else {
             setValidationStatus('available');
@@ -278,6 +415,17 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
         isAr
           ? 'يرجى إدخال أو تحديد الاسم التجاري المقترح قبل إتمام عملية الدفع والتسجيل.'
           : 'Please enter or select a proposed trade name before submitting payment and registration.'
+      );
+      setIsRegistering(false);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    if (validationStatus === 'registered') {
+      setRegistrationError(
+        isAr
+          ? `الاسم التجاري "${matchedRegisteredName || englishTradeName || arabicTradeName}" مسجل بالفعل كاسم نشط في السجل. يرجى اختيار أحد البدائل المتاحة أدناه قبل إتمام التسجيل والدفع.`
+          : `Trade name "${matchedRegisteredName || englishTradeName || arabicTradeName}" is already active in the registry. Please select an available alternative from Explore Names before submitting.`
       );
       setIsRegistering(false);
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -366,34 +514,58 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
     }
   };
 
-  // Dynamic Candidates: populated with real DB/AI verified suggestions (Requirement 6 & 7)
-  const aiRecommendedNames = (activityAiResult?.recommended_trade_names || []).map((rn, idx) => ({
-    id: `ai_brand_${idx}`,
-    nameAr: rn.name_ar,
-    nameEn: rn.name_en,
-    source: 'llm',
-    desc: isAr
-      ? 'اسم تجاري بديل مقترح بالذكاء الاصطناعي متوافق بدقة مع النشاط التجاري المصرح به.'
-      : 'AI-recommended alternative trade name precisely aligned with your approved business activity.',
-  }));
+  // Dynamic Candidates: strictly verified unreserved suggestions (Requirements 6 & 7)
+  const normInputEn = (englishTradeName || '').toLowerCase().trim();
+  const normInputAr = (arabicTradeName || '').trim();
 
   const registryCandidates = (apiSuggestions?.suggestions && apiSuggestions.suggestions.length > 0)
     ? apiSuggestions.suggestions.map((s, idx) => ({
         id: `sug_${idx}`,
-        nameAr: s.name_ar,
-        nameEn: s.name_en,
+        nameAr: s.name_ar || s.nameAr || s.proposed_name_ar,
+        nameEn: s.name_en || s.nameEn || s.proposed_name_en,
         source: s.source,
         desc: isAr
-          ? (s.source === 'llm'
-              ? 'اقتراح ذكي يحافظ على الهوية التجارية ومفاهيم النشاط ومتحقق من خلوه من التعارض في السجل.'
-              : 'بديل مدروس يحفظ الكلمة الأساسية للعلامة التجارية ومتوافق مع السجل التجاري.')
-          : (s.source === 'llm'
-              ? 'AI-crafted alternative preserving your core brand identity and verified against the registry.'
-              : 'Distinct alternative preserving your core brand token with appropriate activity context.'),
+          ? (s.source === 'alternative'
+              ? 'علامة تجارية بديلة ومبتكرة متوافقة مع هذا النشاط وخالية من التعارض في السجل.'
+              : (s.source === 'llm'
+                  ? 'اقتراح ذكي يحافظ على الهوية ومتحقق من خلوه من التعارض في السجل التجاري.'
+                  : 'بديل مدروس يحفظ الكلمة الأساسية للعلامة التجارية ومتوافق مع السجل.'))
+          : (s.source === 'alternative'
+              ? 'Distinctive unreserved alternative brand free from conflicts with active registry records.'
+              : (s.source === 'llm'
+                  ? 'AI-crafted alternative preserving your core brand identity and verified against the registry.'
+                  : 'Distinct alternative preserving your core brand token with appropriate activity context.')),
       }))
     : [];
 
-  const candidates = [...aiRecommendedNames, ...registryCandidates];
+  const aiRecommendedNames = (activityAiResult?.mismatch_detected && activityAiResult?.recommended_trade_names)
+    ? activityAiResult.recommended_trade_names.map((rn, idx) => ({
+        id: `ai_brand_${idx}`,
+        nameAr: rn.name_ar,
+        nameEn: rn.name_en,
+        source: 'llm',
+        desc: isAr
+          ? 'اسم تجاري بديل مقترح بالذكاء الاصطناعي متوافق بدقة مع النشاط التجاري المصرح به.'
+          : 'AI-recommended alternative trade name precisely aligned with your approved business activity.',
+      }))
+    : [];
+
+  // Filter out: input trade name itself, empty names, and duplicates
+  const seenCandKeys = new Set();
+  const candidates = [...registryCandidates, ...aiRecommendedNames].filter((c) => {
+    if (!c.nameEn || !c.nameAr) return false;
+    const cEn = c.nameEn.toLowerCase().trim();
+    const cAr = c.nameAr.trim();
+
+    // Never suggest what the user already typed
+    if (cEn === normInputEn || cAr === normInputAr) return false;
+
+    // Deduplicate
+    const key = `${cEn}::${cAr}`;
+    if (seenCandKeys.has(key)) return false;
+    seenCandKeys.add(key);
+    return true;
+  });
 
   // Dynamic activity category code pills (Requirement 7)
   const dynamicActivityPills = activityCategories.length > 0
@@ -419,7 +591,7 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
   return (
     <div className="reservation-page-wrapper">
       {/* Hero Banner with Approved UAE Document Imagery */}
-      <FigmaHeroBanner isAr={isAr} />
+      <HeroBanner isAr={isAr} />
 
       {/* AI Analyzing Modal Overlay (Screens 2 & 7) */}
       {isAnalyzing && (
@@ -737,7 +909,7 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
                         <input
                           type="text"
                           className="field-input"
-                          placeholder="e.g. Limited liability company"
+                          placeholder="e.g. Limited Liability Company"
                           value={branchFields.legalType}
                           onChange={(e) => setBranchFields({ ...branchFields, legalType: e.target.value })}
                         />
@@ -857,9 +1029,15 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
                       value={legalType}
                       onChange={(e) => setLegalType(e.target.value)}
                     >
-                      <option value="LIMITED LIABILITY COMPANY">LIMITED LIABILITY COMPANY</option>
-                      <option value="SOLE PROPRIETORSHIP">SOLE PROPRIETORSHIP</option>
-                      <option value="PARTNERSHIP">PARTNERSHIP</option>
+                      <option value="Limited Liability Company">
+                        {isAr ? 'شركة ذات مسؤولية محدودة' : 'Limited Liability Company'}
+                      </option>
+                      <option value="Sole Proprietorship">
+                        {isAr ? 'مؤسسة فردية' : 'Sole Proprietorship'}
+                      </option>
+                      <option value="Partnership">
+                        {isAr ? 'شركة تضامنية' : 'Partnership'}
+                      </option>
                     </select>
                   </div>
 
@@ -941,11 +1119,60 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
 
                   {/* Inline Form Validation Error Banner (Requirement 4 & 5) */}
                   {formValidationError && (
-                    <div className="portal-alert-banner error" role="alert" style={{ marginTop: '10px' }}>
+                    <div className="portal-alert-banner error" role="alert" style={{ marginTop: '12px' }}>
                       <div className="portal-alert-lead">
                         <span className="portal-alert-icon">⚠️</span>
                         <div className="portal-alert-body">
                           <span className="portal-alert-msg">{formValidationError}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Inline Registered / Conflict Warning Banner */}
+                  {validationStatus === 'registered' && (
+                    <div className="portal-alert-banner error" role="alert" style={{ marginTop: '12px' }}>
+                      <div className="portal-alert-lead">
+                        <span className="portal-alert-icon">
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#e11d48" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                            <circle cx="12" cy="12" r="10" />
+                            <line x1="12" y1="8" x2="12" y2="12" />
+                            <line x1="12" y1="16" x2="12.01" y2="16" />
+                          </svg>
+                        </span>
+                        <div className="portal-alert-body">
+                          <span className="portal-alert-title">
+                            {isAr ? 'الاسم التجاري مسجل بالفعل في السجل' : 'Trade Name Already Registered'}
+                          </span>
+                          <span className="portal-alert-msg">
+                            {registrationError || (isAr
+                              ? `الاسم "${matchedRegisteredName || arabicTradeName || englishTradeName}" مسجل كاسم نشط في السجل التجاري ضمن هذا النشاط. يرجى اختيار أحد البدائل المتاحة أدناه.`
+                              : `Trade name "${matchedRegisteredName || englishTradeName || arabicTradeName}" is already active in the official registry. Distinct unreserved suggestions have been generated below.`)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Inline Available Status Banner */}
+                  {validationStatus === 'available' && (
+                    <div className="portal-alert-banner success" role="status" style={{ marginTop: '12px' }}>
+                      <div className="portal-alert-lead">
+                        <span className="portal-alert-icon">
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#16a34a" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                            <polyline points="22 4 12 14.01 9 11.01" />
+                          </svg>
+                        </span>
+                        <div className="portal-alert-body">
+                          <span className="portal-alert-title">
+                            {isAr ? 'الاسم التجاري متاح للتسجيل' : 'Trade Name Available'}
+                          </span>
+                          <span className="portal-alert-msg">
+                            {isAr
+                              ? `الاسم التجاري "${arabicTradeName || englishTradeName}" مؤهل ومتاح للتسجيل الفوري.`
+                              : `Trade name "${englishTradeName || arabicTradeName}" is unreserved and ready for registration.`}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -971,6 +1198,8 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
                         setActivityType('');
                         setFormValidationError(null);
                         setIsArabicManuallyEdited(false);
+                        setIsEnglishManuallyEdited(false);
+                        setLastEditedSource(null);
                       }}
                     >
                       {isAr ? 'إلغاء' : 'Cancel'}
@@ -989,9 +1218,9 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
           </div>
 
           {/* ========================================================
-              SCREEN 4 & 5: EXPLORE NAMES (When New Licence is Analyzed)
+              SCREEN 4 & 5: EXPLORE NAMES (When New Licence is Analyzed or Registered Name Entered)
              ======================================================== */}
-          {tradeNameType === 'new' && newLicenseState === 'analyzed' && (
+          {tradeNameType === 'new' && (newLicenseState === 'analyzed' || validationStatus === 'registered' || candidates.length > 0) && (
             <div className="figma-card explore-names-card">
               {/* Header with Title and Toggle Pill */}
               <div className="explore-header-row">
@@ -1144,8 +1373,12 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
                           <div className="cand-english-title">{c.nameEn}</div>
                           <div className="cand-description">{c.desc}</div>
                           {c.source && (
-                            <span className={`cand-source-tag ${c.source === 'llm' ? 'ai' : 'template'}`}>
-                              {c.source === 'llm' ? (isAr ? 'ذكاء اصطناعي' : 'AI Distinct') : (isAr ? 'مطابق للهوية' : 'Brand Preserved')}
+                            <span className={`cand-source-tag ${c.source === 'alternative' ? 'ai' : (c.source === 'llm' ? 'ai' : 'template')}`}>
+                              {c.source === 'alternative'
+                                ? (isAr ? 'علامة بديلة متاحة' : 'ALTERNATIVE BRAND')
+                                : (c.source === 'llm'
+                                    ? (isAr ? 'ذكاء اصطناعي' : 'AI DISTINCT')
+                                    : (isAr ? 'مطابق للهوية' : 'BRAND PRESERVED'))}
                             </span>
                           )}
                         </div>
@@ -1324,7 +1557,7 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
                   <input
                     type="text"
                     className="field-input"
-                    value={branchFields.legalType || 'LIMITED LIABILITY COMPANY'}
+                    value={branchFields.legalType || 'Limited Liability Company'}
                     onChange={(e) => setBranchFields({ ...branchFields, legalType: e.target.value })}
                   />
                 </div>
@@ -1373,7 +1606,7 @@ export default function TradeNameReservationFlow({ isAr, onNavigateToCopilot }) 
 
         {/* Right Column: Summary Panel */}
         <div className="workspace-right-col">
-          <FigmaSummaryPanel
+          <SummaryPanel
             isAr={isAr}
             mode={
               (tradeNameType === 'new' && newLicenseState === 'analyzed') ||

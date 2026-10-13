@@ -27,15 +27,27 @@ Vector operations use sqlalchemy text() with explicit SQL. The column is stored
 as TEXT in the ORM model and cast with ::vector in queries (see Alembic migration
 for the actual VECTOR(N) column definition).
 """
+import re
 from dataclasses import dataclass
 from typing import Optional
 
+from rapidfuzz import fuzz
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import TradeNameIndex
 
 ACTIVE_STATUS = "active"
+
+
+def canonical_clean(s: str) -> str:
+    """Normalize casing, strip all punctuation and symbols, and collapse whitespace."""
+    if not s:
+        return ""
+    s = s.lower()
+    # remove punctuation and symbols (retain letters and digits)
+    s = re.sub(r"[^\w\s\u0600-\u06FF]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
 
 
 @dataclass
@@ -59,35 +71,27 @@ class TradeNameIndexRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
-
-    # -----------------------------------------------------------------------
-    # Stage ② — Exact duplicate check (F2)
+      # -----------------------------------------------------------------------
+    # Stage ② — Exact duplicate check (F2) with Activity Type Scoping
     # -----------------------------------------------------------------------
     async def lookup_exact(
         self,
         normalized_ar: str,
         normalized_en: str,
+        category_id: Optional[int] = None,
         exclude_trade_name_id: Optional[int] = None,
     ) -> list[IndexEntry]:
         """
-        Check for exact duplicates against ACTIVE names.
-        Spec F2: "Exact-duplicate check against active names (not released, not
-        expired, not draft), ignoring case and spaces, excluding the record being edited."
-
-        The normalizer already handles case-folding and whitespace; the
-        comparison is done on normalized forms.
-
-        Args:
-            normalized_ar:          Normalized Arabic name from Stage ①
-            normalized_en:          Normalized English name from Stage ①
-            exclude_trade_name_id:  trade_name_id of the record being edited
-                                    (Ambiguity #7: caller provides this for edit/renew)
-
-        Returns:
-            List of IndexEntry objects that are exact matches (should be empty for OK).
+        Check for exact duplicates against ACTIVE names within category_id (if provided).
+        Spec F2 & Activity Scope: Exact-duplicate check against active names,
+        ignoring case, extra spaces, and punctuation, excluding the record being edited,
+        scoped to the selected activity type.
         """
         norm_ar_clean = normalized_ar.strip() if normalized_ar else ""
         norm_en_clean = normalized_en.strip().lower() if normalized_en else ""
+
+        canon_ar = canonical_clean(norm_ar_clean)
+        canon_en = canonical_clean(norm_en_clean)
 
         conditions = []
         params = {"status": ACTIVE_STATUS}
@@ -99,36 +103,166 @@ class TradeNameIndexRepository:
             conditions.append("LOWER(TRIM(normalized_en)) = :norm_en")
             params["norm_en"] = norm_en_clean
 
-        if not conditions:
-            return []
+        category_clause = ""
+        if category_id is not None:
+            category_clause = "AND category_id = :category_id"
+            params["category_id"] = category_id
 
-        match_clause = " OR ".join(conditions)
+        exclude_clause = "AND trade_name_id != :exclude_id" if exclude_trade_name_id is not None else ""
+        if exclude_trade_name_id is not None:
+            params["exclude_id"] = exclude_trade_name_id
+
+        matched_entries: list[IndexEntry] = []
+        seen_ids: set[int] = set()
+
+        if conditions:
+            match_clause = " OR ".join(conditions)
+            sql = f"""
+                SELECT id, trade_name_id, normalized_ar, normalized_en, phonetic_key,
+                       category_id, status
+                FROM trade_name_index
+                WHERE status = :status
+                  {category_clause}
+                  AND ({match_clause})
+                  {exclude_clause}
+            """
+            result = await self._session.execute(text(sql), params)
+            rows = result.fetchall()
+            for r in rows:
+                if r[1] not in seen_ids:
+                    seen_ids.add(r[1])
+                    matched_entries.append(
+                        IndexEntry(
+                            id=r[0],
+                            trade_name_id=r[1],
+                            normalized_ar=r[2],
+                            normalized_en=r[3],
+                            phonetic_key=r[4],
+                            category_id=r[5],
+                            status=r[6],
+                        )
+                    )
+
+        # Also check canonical form equality (ignoring casing, punctuation, extra spaces)
+        if canon_en or canon_ar:
+            sql_canon = f"""
+                SELECT id, trade_name_id, normalized_ar, normalized_en, phonetic_key,
+                       category_id, status
+                FROM trade_name_index
+                WHERE status = :status
+                  {category_clause}
+                  {exclude_clause}
+            """
+            canon_params = {"status": ACTIVE_STATUS}
+            if category_id is not None:
+                canon_params["category_id"] = category_id
+            if exclude_trade_name_id is not None:
+                canon_params["exclude_id"] = exclude_trade_name_id
+
+            res_canon = await self._session.execute(text(sql_canon), canon_params)
+            for r in res_canon.fetchall():
+                if r[1] in seen_ids:
+                    continue
+                cand_canon_ar = canonical_clean(r[2] or "")
+                cand_canon_en = canonical_clean(r[3] or "")
+                is_canon_match = False
+                if canon_en and cand_canon_en and canon_en == cand_canon_en:
+                    is_canon_match = True
+                elif canon_ar and cand_canon_ar and canon_ar == cand_canon_ar:
+                    is_canon_match = True
+
+                if is_canon_match:
+                    seen_ids.add(r[1])
+                    matched_entries.append(
+                        IndexEntry(
+                            id=r[0],
+                            trade_name_id=r[1],
+                            normalized_ar=r[2],
+                            normalized_en=r[3],
+                            phonetic_key=r[4],
+                            category_id=r[5],
+                            status=r[6],
+                        )
+                    )
+
+        return matched_entries
+
+    async def find_similar_in_category(
+        self,
+        normalized_ar: str,
+        normalized_en: str,
+        category_id: int,
+        exclude_trade_name_id: Optional[int] = None,
+        similarity_threshold: float = 0.82,
+    ) -> list[tuple[IndexEntry, float, str]]:
+        """
+        Identify confusingly similar trade names under the same activity type (category_id).
+        Detects minor spelling variations, punctuation, edit distance, and phonetic similarity.
+        Returns list of (IndexEntry, similarity_score, match_type) ordered by score descending.
+        """
         exclude_clause = "AND trade_name_id != :exclude_id" if exclude_trade_name_id is not None else ""
         sql = f"""
             SELECT id, trade_name_id, normalized_ar, normalized_en, phonetic_key,
                    category_id, status
             FROM trade_name_index
             WHERE status = :status
-              AND ({match_clause})
+              AND category_id = :category_id
               {exclude_clause}
         """
+        params = {"status": ACTIVE_STATUS, "category_id": category_id}
         if exclude_trade_name_id is not None:
             params["exclude_id"] = exclude_trade_name_id
 
         result = await self._session.execute(text(sql), params)
         rows = result.fetchall()
-        return [
-            IndexEntry(
-                id=r[0],
-                trade_name_id=r[1],
-                normalized_ar=r[2],
-                normalized_en=r[3],
-                phonetic_key=r[4],
-                category_id=r[5],
-                status=r[6],
-            )
-            for r in rows
-        ]
+
+        canon_q_en = canonical_clean(normalized_en)
+        canon_q_ar = canonical_clean(normalized_ar)
+
+        scored: list[tuple[IndexEntry, float, str]] = []
+
+        for r in rows:
+            cand_canon_ar = canonical_clean(r[2] or "")
+            cand_canon_en = canonical_clean(r[3] or "")
+
+            score = 0.0
+
+            # 1. English check
+            if canon_q_en and cand_canon_en:
+                ratio = fuzz.ratio(canon_q_en, cand_canon_en) / 100.0
+                token_set = fuzz.token_set_ratio(canon_q_en, cand_canon_en) / 100.0
+                token_sort = fuzz.token_sort_ratio(canon_q_en, cand_canon_en) / 100.0
+                score = max(score, ratio, 0.7 * token_set + 0.3 * token_sort)
+
+            # 2. Arabic check
+            if canon_q_ar and cand_canon_ar:
+                ratio_ar = fuzz.ratio(canon_q_ar, cand_canon_ar) / 100.0
+                score = max(score, ratio_ar)
+
+            # 3. Phonetic cross-check
+            if r[4] and (canon_q_en or canon_q_ar):
+                from index.phonetic import generate_phonetic_key_pair
+                q_phone = generate_phonetic_key_pair(normalized_ar, normalized_en)
+                if q_phone and (q_phone == r[4] or q_phone.split("|")[0] == r[4].split("|")[0]):
+                    if score >= 0.75:
+                        score = max(score, 0.88)
+
+            if score >= similarity_threshold:
+                match_type = "exact_duplicate" if score >= 0.99 else "spelling_variation"
+                entry = IndexEntry(
+                    id=r[0],
+                    trade_name_id=r[1],
+                    normalized_ar=r[2],
+                    normalized_en=r[3],
+                    phonetic_key=r[4],
+                    category_id=r[5],
+                    status=r[6],
+                    similarity_score=round(score, 4),
+                )
+                scored.append((entry, round(score, 4), match_type))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored
 
     # -----------------------------------------------------------------------
     # Stage ③ — Phonetic lookup (E2)
@@ -136,22 +270,25 @@ class TradeNameIndexRepository:
     async def lookup_phonetic(
         self,
         phonetic_key: str,
+        category_id: Optional[int] = None,
         exclude_trade_name_id: Optional[int] = None,
         limit: int = 10,
     ) -> list[IndexEntry]:
         """
-        Find active names that share the phonetic key (or prefix thereof).
+        Find active names that share the phonetic key (or prefix thereof), scoped by category_id if provided.
         Used for cross-script phonetic matching (E2: Noor = Nour = النور).
 
         The phonetic_key format is "{AR_KEY}|{EN_KEY}"; we search on both
         halves to allow Arabic query → English result and vice versa.
         """
         exclude_clause = "AND trade_name_id != :exclude_id" if exclude_trade_name_id is not None else ""
+        category_clause = "AND category_id = :category_id" if category_id is not None else ""
         sql = f"""
             SELECT id, trade_name_id, normalized_ar, normalized_en, phonetic_key,
                    category_id, status
             FROM trade_name_index
             WHERE status = :status
+              {category_clause}
               AND (phonetic_key = :key OR phonetic_key LIKE :key_prefix)
               {exclude_clause}
             LIMIT :lim
@@ -166,6 +303,8 @@ class TradeNameIndexRepository:
             "key_prefix": key_prefix,
             "lim": limit,
         }
+        if category_id is not None:
+            params["category_id"] = category_id
         if exclude_trade_name_id is not None:
             params["exclude_id"] = exclude_trade_name_id
 
@@ -192,11 +331,12 @@ class TradeNameIndexRepository:
         self,
         normalized_ar: str,
         normalized_en: str,
+        category_id: Optional[int] = None,
         exclude_trade_name_id: Optional[int] = None,
         limit: int = 10,
     ) -> list[IndexEntry]:
         """
-        Find similar active names using pg_trgm similarity.
+        Find similar active names using pg_trgm similarity, scoped by category_id if provided.
         Returns results ordered by combined AR+EN similarity score.
         Used by Stage ③ (trigram signal) and GET Search in Phase 1.
         """
@@ -204,6 +344,7 @@ class TradeNameIndexRepository:
         norm_en_clean = normalized_en.strip().lower() if normalized_en else ""
 
         exclude_clause = "AND trade_name_id != :exclude_id" if exclude_trade_name_id is not None else ""
+        category_clause = "AND category_id = :category_id" if category_id is not None else ""
         sql = f"""
             SELECT id, trade_name_id, normalized_ar, normalized_en, phonetic_key,
                    category_id, status,
@@ -217,6 +358,7 @@ class TradeNameIndexRepository:
                    ) AS sim_score
             FROM trade_name_index
             WHERE status = :status
+              {category_clause}
               AND (
                   (:norm_ar != '' AND (TRIM(normalized_ar) = :norm_ar OR similarity(normalized_ar, :norm_ar) > 0.2))
                   OR (:norm_en != '' AND (LOWER(TRIM(normalized_en)) = :norm_en OR similarity(normalized_en, :norm_en) > 0.2))
@@ -231,6 +373,8 @@ class TradeNameIndexRepository:
             "norm_en": norm_en_clean,
             "lim": limit,
         }
+        if category_id is not None:
+            params["category_id"] = category_id
         if exclude_trade_name_id is not None:
             params["exclude_id"] = exclude_trade_name_id
 
@@ -335,9 +479,12 @@ class TradeNameIndexRepository:
                        category_id, status
                 FROM trade_name_index
                 WHERE status = :status
+                  {category_clause}
                   {exclude_clause}
             """
             fallback_params = {"status": ACTIVE_STATUS}
+            if category_id is not None:
+                fallback_params["category_id"] = category_id
             if exclude_trade_name_id is not None:
                 fallback_params["exclude_id"] = exclude_trade_name_id
             result = await self._session.execute(text(sql_fallback), fallback_params)
@@ -371,11 +518,12 @@ class TradeNameIndexRepository:
         self,
         embedding: list[float],
         lang: str,
+        category_id: Optional[int] = None,
         exclude_trade_name_id: Optional[int] = None,
         limit: int = 10,
     ) -> list[IndexEntry]:
         """
-        Find similar active names using cosine similarity on pgvector embeddings.
+        Find similar active names using cosine similarity on pgvector embeddings, scoped by category_id if provided.
         lang: "ar" uses embedding_ar column; "en" uses embedding_en column.
 
         Used by Stage ③ (embedding signal) when Ai.Search = shadow/on.
@@ -385,12 +533,14 @@ class TradeNameIndexRepository:
         # Build embedding literal: '[0.1, 0.2, ...]'
         vec_literal = "[" + ",".join(str(v) for v in embedding) + "]"
         exclude_clause = "AND trade_name_id != :exclude_id" if exclude_trade_name_id is not None else ""
+        category_clause = "AND category_id = :category_id" if category_id is not None else ""
         sql = f"""
             SELECT id, trade_name_id, normalized_ar, normalized_en, phonetic_key,
                    category_id, status,
                    1 - ({col} <=> :vec::vector) AS cos_sim
             FROM trade_name_index
             WHERE status = :status
+              {category_clause}
               AND {col} IS NOT NULL
               {exclude_clause}
             ORDER BY {col} <=> :vec::vector
@@ -401,6 +551,8 @@ class TradeNameIndexRepository:
             "vec": vec_literal,
             "lim": limit,
         }
+        if category_id is not None:
+            params["category_id"] = category_id
         if exclude_trade_name_id is not None:
             params["exclude_id"] = exclude_trade_name_id
 

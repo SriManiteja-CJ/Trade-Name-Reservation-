@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import FigmaHeroBanner from './FigmaHeroBanner';
+import HeroBanner from './HeroBanner';
 import { API_BASE } from '../config';
 
 const PRESETS = [
@@ -159,7 +159,7 @@ export default function ValidationTab({ lang, channel, onValidationComplete, onN
 
   return (
     <div className="compliance-tab-container" dir={isAr ? 'rtl' : 'ltr'}>
-      <FigmaHeroBanner
+      <HeroBanner
         isAr={isAr}
         title={isAr ? 'الامتثال وفحص بوابات الرقابة' : 'Compliance & Governance Inspection'}
         breadcrumbs={[

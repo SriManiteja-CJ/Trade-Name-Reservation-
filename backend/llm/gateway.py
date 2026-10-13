@@ -464,6 +464,7 @@ class LlmGateway:
         activity_category: Optional[str] = None,
         legal_form: Optional[str] = None,
         num_candidates: int = 25,
+        conflict_brand: Optional[str] = None,
     ) -> Optional[SuggestionBatchOutput]:
         """
         Stage ⑥: Generate ~25 candidate trade name pairs using suggestions LLM model (F8, F9, N8).
@@ -499,6 +500,7 @@ class LlmGateway:
             activity_category=activity_category,
             legal_form=legal_form,
             num_candidates=num_candidates,
+            conflict_brand=conflict_brand,
         )
 
         cfg = get_settings()
@@ -719,6 +721,59 @@ class LlmGateway:
                 return None
         except Exception as exc:
             logger.warning("llm_transliterate_to_arabic_failed", extra={"error": str(exc)})
+            _circuit_breaker.record_failure()
+            return None
+
+    async def transliterate_to_english(
+        self,
+        name_ar: str,
+        request_id: Optional[str] = None,
+        channel: str = "online",
+    ) -> Optional[dict[str, Any]]:
+        """
+        Transliterate Arabic trade name to official DED English trade name.
+        Uses LLM with fast fallback.
+        """
+        import uuid
+        from llm.prompts import DEFAULT_TRANSLITERATE_TO_ENGLISH_PROMPT
+
+        clean_ar = (name_ar or "").strip()
+        if not clean_ar:
+            return {"english_name": "", "confidence": 1.0}
+
+        req_id = request_id or f"translit-ar2en-{uuid.uuid4().hex[:8]}"
+
+        if not _circuit_breaker.is_available():
+            return None
+
+        cfg = get_settings()
+        payload = {
+            "model": cfg.effective_analyzer_model,
+            "messages": [
+                {"role": "system", "content": DEFAULT_TRANSLITERATE_TO_ENGLISH_PROMPT},
+                {"role": "user", "content": f"Arabic Trade Name: {clean_ar}"},
+            ],
+            "temperature": 0,
+            "max_tokens": 128,
+            "response_format": {"type": "json_object"},
+        }
+
+        try:
+            response = await self._http_client.post("/chat/completions", json=payload)
+            if response.status_code == 200:
+                resp_json = response.json()
+                content = resp_json["choices"][0]["message"]["content"]
+                raw_dict = json.loads(content)
+                _circuit_breaker.record_success()
+                return {
+                    "english_name": raw_dict.get("english_name") or raw_dict.get("name_en", ""),
+                    "confidence": float(raw_dict.get("confidence", 0.95)),
+                }
+            else:
+                _circuit_breaker.record_failure()
+                return None
+        except Exception as exc:
+            logger.warning("llm_transliterate_to_english_failed", extra={"error": str(exc)})
             _circuit_breaker.record_failure()
             return None
 
@@ -982,11 +1037,9 @@ class LlmGateway:
         latency_ms: Optional[int],
         tokens: Optional[int],
     ) -> None:
-        """Write an AiDecisionAudit row. Failures are logged but never propagate (N3)."""
-        if not self.session:
-            return
+        """Write an AiDecisionAudit row safely in an isolated session so request transaction is never corrupted (N3)."""
         try:
-            async with self.session.begin_nested():
+            if self.session is not None:
                 audit_repo = AuditRepository(self.session)
                 await asyncio.wait_for(
                     audit_repo.record_audit(
@@ -1000,8 +1053,31 @@ class LlmGateway:
                         latency_ms=latency_ms,
                         tokens=tokens,
                     ),
-                    timeout=1.0,
+                    timeout=3.0,
                 )
+                try:
+                    await self.session.commit()
+                except Exception:
+                    pass
+            else:
+                from db.session import AsyncSessionLocal
+                async with AsyncSessionLocal() as audit_session:
+                    audit_repo = AuditRepository(audit_session)
+                    await asyncio.wait_for(
+                        audit_repo.record_audit(
+                            request_id=request_id,
+                            channel=channel,
+                            input_hash=input_hash,
+                            prompt_version=prompt_version,
+                            model_id=settings.effective_analyzer_model,
+                            outcome=outcome,
+                            raw_output=raw_output,
+                            latency_ms=latency_ms,
+                            tokens=tokens,
+                        ),
+                        timeout=3.0,
+                    )
+                    await audit_session.commit()
         except Exception as audit_err:
             logger.warning(
                 "audit_write_failed_or_timed_out",

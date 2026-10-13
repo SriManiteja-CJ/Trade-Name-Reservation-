@@ -44,11 +44,12 @@ class HybridRetriever:
         *,
         normalized_ar: str,
         normalized_en: str,
+        category_id: Optional[int] = None,
         exclude_trade_name_id: Optional[int] = None,
         limit: int = 10,
     ) -> list[IndexEntry]:
         """
-        Execute hybrid retrieval across active names.
+        Execute hybrid retrieval across active names (optionally scoped to category_id).
 
         Fuses trigram, phonetic, and vector signals with rank scoring.
         """
@@ -62,6 +63,7 @@ class HybridRetriever:
             trigram_hits = await self.repo.lookup_trigram(
                 normalized_ar=normalized_ar,
                 normalized_en=normalized_en,
+                category_id=category_id,
                 exclude_trade_name_id=exclude_trade_name_id,
                 limit=limit * 2,
             )
@@ -79,6 +81,7 @@ class HybridRetriever:
             try:
                 phonetic_hits = await self.repo.lookup_phonetic(
                     phonetic_key=phonetic_key,
+                    category_id=category_id,
                     exclude_trade_name_id=exclude_trade_name_id,
                     limit=limit * 2,
                 )
@@ -100,6 +103,7 @@ class HybridRetriever:
                     vector_hits = await self.repo.lookup_vector(
                         embedding=embedding,
                         lang=lang,
+                        category_id=category_id,
                         exclude_trade_name_id=exclude_trade_name_id,
                         limit=limit * 2,
                     )

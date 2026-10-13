@@ -253,9 +253,10 @@ class CheckTransliterationResponse(BaseModel):
 
 
 class TransliterateRequest(BaseModel):
-    """POST TradeName/Transliterate — English to Arabic transliteration and activity translation."""
+    """POST TradeName/Transliterate — Bidirectional English <-> Arabic transliteration and translation."""
     model_config = ConfigDict(populate_by_name=True, extra="allow")
-    NameEn: str = Field(..., validation_alias=AliasChoices("NameEn", "name_en", "english_name", "englishName"))
+    NameEn: Optional[str] = Field(None, validation_alias=AliasChoices("NameEn", "name_en", "english_name", "englishName"))
+    NameAr: Optional[str] = Field(None, validation_alias=AliasChoices("NameAr", "name_ar", "arabic_name", "arabicName"))
 
 
 class TransliterateResponse(BaseModel):
@@ -338,6 +339,7 @@ class RegisterTradeNameRequest(BaseModel):
     NameAr: Optional[str] = Field(None, validation_alias=AliasChoices("NameAr", "name_ar", "TradeNameArabic"))
     NameEn: Optional[str] = Field(None, validation_alias=AliasChoices("NameEn", "name_en", "TradeNameEnglish"))
     CategoryId: Optional[int] = Field(None, validation_alias=AliasChoices("CategoryId", "category_id", "ActivityCategory", "ActivityCategoryId"))
+    TradeNameId: Optional[int] = Field(None, validation_alias=AliasChoices("TradeNameId", "trade_name_id", "TradeNameID"))
     ApplicantName: Optional[str] = Field(None, validation_alias=AliasChoices("ApplicantName", "applicant_name"))
     ReferenceNumber: Optional[str] = Field(None, validation_alias=AliasChoices("ReferenceNumber", "reference_number"))
     OperationType: Optional[str] = Field("new", validation_alias=AliasChoices("OperationType", "operation_type"))
@@ -354,6 +356,10 @@ class RegisterTradeNameRequest(BaseModel):
     @property
     def category_id(self) -> Optional[int]:
         return self.CategoryId
+
+    @property
+    def trade_name_id(self) -> Optional[int]:
+        return self.TradeNameId
 
     @property
     def legal_form(self) -> Optional[str]:

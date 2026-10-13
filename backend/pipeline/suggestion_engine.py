@@ -51,8 +51,9 @@ def extract_core_brand_token(name: str, lang: str = "en") -> str:
     """
     Isolates the distinctive brand identifier from common descriptor terms (Requirement 2 & 3).
     e.g. 'Teja Cafe and Restaurant' -> 'Teja'
-         'Teja cafe' -> 'Teja'
+         'Cloudjune Technologies' -> 'Cloudjune'
          'مطعم وكافيه تيجا' -> 'تيجا'
+         'كلاودجون للتكنولوجيا' -> 'كلاودجون'
     """
     if not name:
         return ""
@@ -61,8 +62,11 @@ def extract_core_brand_token(name: str, lang: str = "en") -> str:
             "cafe", "café", "restaurant", "restaurants", "bistro", "bistros",
             "diner", "dining", "kitchen", "lounge", "food", "foods", "and", "&",
             "co", "company", "house", "trading", "services", "solutions",
-            "tech", "group", "enterprises", "general", "express", "grill",
-            "bakery", "sweets", "bar", "hub", "center", "dine"
+            "tech", "technology", "technologies", "software", "systems", "digital",
+            "consulting", "consultancy", "group", "enterprises", "general", "express",
+            "grill", "bakery", "sweets", "bar", "hub", "center", "dine", "innovations",
+            "innovation", "labs", "lab", "holdings", "holding", "corporation", "corp",
+            "international", "commercial", "smart", "management", "logistics"
         }
         tokens = name.strip().split()
         brand_tokens = [w for w in tokens if w.lower() not in descriptors]
@@ -70,9 +74,13 @@ def extract_core_brand_token(name: str, lang: str = "en") -> str:
     else:
         descriptors_ar = {
             "مطعم", "كافيه", "مقهى", "لاونج", "بسترو", "مأكولات", "ماكولات",
-            "وجبات", "و", "للحلول", "للتجارة", "للخدمات", "شركة", "مؤسسة",
-            "العامة", "اكسبريس", "مطبخ", "جريل", "مخبز", "حلويات", "بيت",
-            "مركز", "جروب", "داينينغ"
+            "وجبات", "و", "للحلول", "حلول", "للتجارة", "تجارة", "للخدمات", "خدمات",
+            "شركة", "مؤسسة", "العامة", "اكسبريس", "مطبخ", "جريل", "مخبز", "حلويات", "بيت",
+            "مركز", "جروب", "داينينغ", "تكنولوجيا", "التكنولوجيا", "للتكنولوجيا",
+            "تقنية", "التقنية", "للتقنية", "تقنيات", "التقنيات", "للتقنيات",
+            "برمجيات", "البرمجيات", "للبرمجيات", "أنظمة", "الأنظمة", "للأنظمة",
+            "رقمية", "الرقمية", "للرقمية", "استشارات", "الاستشارات", "للاستشارات",
+            "مختبرات", "ابتكار", "للابتكار", "القابضة", "العالمية", "الذكية", "الدولية"
         }
         tokens = name.strip().split()
         brand_tokens = [w for w in tokens if w not in descriptors_ar]
@@ -184,16 +192,31 @@ def is_candidate_relevant(
     cand_ar: str,
     brand_en: str,
     brand_ar: str,
+    brand_conflict: bool = False,
 ) -> bool:
     """
     Checks if a suggestion candidate is meaningfully related to the user's core brand tokens.
-    Rejects suggestions that do not retain or relate to the user's brand name.
+    If brand_conflict is True, strictly ensures the candidate DOES NOT reuse the conflicting brand token.
     """
     b_en = (brand_en or "").lower().strip()
     b_ar = (brand_ar or "").strip()
 
     c_en = (cand_en or "").lower().strip()
     c_ar = (cand_ar or "").strip()
+
+    if brand_conflict:
+        # Strictly reject any candidate that contains the conflicting/registered brand token
+        if b_en and (b_en in c_en or any(w == b_en for w in c_en.split())):
+            return False
+        if b_ar and (b_ar in c_ar or any(w == b_ar for w in c_ar.split())):
+            return False
+        trans_ar = transliterate_en_to_ar_token(b_en)
+        if trans_ar and (trans_ar in c_ar or any(w == trans_ar for w in c_ar.split())):
+            return False
+        trans_en = transliterate_ar_to_en_token(b_ar).lower()
+        if trans_en and (trans_en in c_en or any(w == trans_en for w in c_en.split())):
+            return False
+        return True
 
     # 1. Direct token or substring match in English
     if b_en and (b_en in c_en or any(token in c_en.split() for token in b_en.split())):
@@ -281,6 +304,66 @@ DEFAULT_TEMPLATES: list[tuple[str, str]] = [
     ("العالمية التجارية", "GLOBAL COMMERCIAL"),
 ]
 
+# Distinct alternative brand names when the applicant's brand collides with existing registry records
+CATEGORY_ALTERNATIVE_TEMPLATES: dict[str, list[tuple[str, str]]] = {
+    "3": [
+        ("أورا للحلول التقنية", "AURA TECH SOLUTIONS"),
+        ("ستراتو للأنظمة والبرمجيات", "STRATO SYSTEMS & SOFTWARE"),
+        ("نيكساسبيس للتقنيات الذكية", "NEXASPACE SMART TECHNOLOGIES"),
+        ("سكاي فيرتكس للحلول الرقمية", "SKYVERTEX DIGITAL SOLUTIONS"),
+        ("سينرجيتك للبرمجيات", "SYNERGITECH SOFTWARE"),
+        ("فانتج بوينت للتقنية", "VANTAGEPOINT TECH"),
+        ("نوفا كود لتكنولوجيا المعلومات", "NOVACODE IT SOLUTIONS"),
+        ("ألتوس للأنظمة السحابية", "ALTUS CLOUD SYSTEMS"),
+        ("زينيث للابتكار الرقمي", "ZENITH DIGITAL INNOVATION"),
+        ("بلوستراتوس لتقنية المعلومات", "BLUESTRATUS IT SERVICES"),
+    ],
+    "4": [
+        ("مقهى وبسترو الساحة", "AL SAHA CAFE & BISTRO"),
+        ("بريز كافيه ومطعم", "BREEZE CAFE & DINING"),
+        ("سينامون لاونج وكافيه", "CINNAMON LOUNGE & CAFE"),
+        ("أمبر جورميه كافيه", "AMBER GOURMET CAFE"),
+        ("أورورا بسترو وكافيه", "AURORA BISTRO & CAFE"),
+        ("واحة النخيل كافيه", "OASIS PALM CAFE"),
+        ("أوريجان لاونج وكافيه", "ORIGIN LOUNGE & CAFE"),
+        ("ميدتاون كافيه هاوس", "MIDTOWN CAFE HOUSE"),
+        ("إيليت بايتس وكافيه", "ELITE BITES & CAFE"),
+        ("كراون كافيه ومخبز", "CROWN CAFE & BAKERY"),
+    ],
+    "1": [
+        ("المدار للتجارة العامة", "AL MADAR GENERAL TRADING"),
+        ("أفق الشرق للتجارة", "EAST HORIZON TRADING"),
+        ("القِمّة العالمية للتجارة", "GLOBAL APEX TRADING"),
+        ("ميدوي للتجارة العامة", "MIDWAY GENERAL TRADING"),
+        ("فنتشر للتجارة والتوزيع", "VENTURE TRADING & DISTRIBUTION"),
+        ("الأفق الذهبي للتجارة", "GOLDEN HORIZON TRADING"),
+        ("نكسوس للتجارة العامة", "NEXUS GENERAL TRADING"),
+        ("برايم كراون للتجارة", "PRIME CROWN TRADING"),
+    ],
+    "2": [
+        ("أكسيس للاستشارات الإدارية", "AXIS MANAGEMENT CONSULTING"),
+        ("بيكون للاستشارات والحلول", "BEACON CONSULTANCY & SOLUTIONS"),
+        ("كريست للاستشارات المهنية", "CREST PROFESSIONAL CONSULTANCY"),
+        ("إنسايت للاستشارات", "INSIGHT CONSULTING"),
+        ("تريومف للاستشارات المؤسسية", "TRIUMPH CORPORATE ADVISORY"),
+        ("بريزم للاستشارات وتطوير الأعمال", "PRISM BUSINESS ADVISORY"),
+    ],
+}
+
+DEFAULT_ALTERNATIVE_TEMPLATES: list[tuple[str, str]] = [
+    ("الأفق المتميز", "HORIZON APEX"),
+    ("رؤية المستقبل للخدمات", "FUTURE VISION SERVICES"),
+    ("نبراس الخليج", "NIBRAS GULF"),
+    ("طليعة الريادة", "VANGUARD ENTERPRISES"),
+    ("النخبة المتكاملة", "ELITE INTEGRATED"),
+    ("سماء الإبداع", "CREATIVE SKYLINE"),
+    ("الشهاب للخدمات", "AL SHEHAB SERVICES"),
+    ("أركان الأصالة", "ARKAN AL ASALA"),
+    ("الوسام الماسي", "DIAMOND BADGE"),
+    ("رواد المستقبل", "FUTURE PIONEERS"),
+]
+
+
 
 @dataclass
 class SuggestionItemDTO:
@@ -289,6 +372,27 @@ class SuggestionItemDTO:
     name_en: str
     score: float = 1.0
     source: str = "llm"  # "llm" or "template"
+
+
+def format_legal_form_suffix(legal_form: Optional[str]) -> tuple[str, str]:
+    """
+    Returns (en_suffix, ar_suffix) for legal forms.
+    Uses clean, industry-standard abbreviations (e.g. LLC / ذ.م.م) instead of verbose LIMITED LIABILITY COMPANY.
+    """
+    if not legal_form:
+        return ("", "")
+    lf_norm = legal_form.strip().lower()
+    if any(k in lf_norm for k in ("limited liability", "llc", "l.l.c", "ذات مسؤولية", "ذ.م.م")):
+        return ("LLC", "ذ.م.م")
+    if any(k in lf_norm for k in ("sole", "establishment", "proprietorship", "مؤسسة", "فردية")):
+        return ("Sole Est.", "مؤسسة فردية")
+    if any(k in lf_norm for k in ("partnership", "تضامن", "تضامنية")):
+        return ("Partnership", "شركة تضامنية")
+    if any(k in lf_norm for k in ("pjsc", "public joint", "مساهمة عامة")):
+        return ("PJSC", "ش.م.ع")
+    if any(k in lf_norm for k in ("psc", "private joint", "private shareholding", "مساهمة خاصة")):
+        return ("PSC", "ش.م.خ")
+    return (legal_form.strip().upper(), legal_form.strip())
 
 
 class SuggestionEngine:
@@ -312,6 +416,7 @@ class SuggestionEngine:
         name_ar: str,
         name_en: str,
         activity_category: Optional[str] = None,
+        category_id: Optional[int] = None,
         legal_form: Optional[str] = None,
         request_id: str = "suggestion-req",
         channel: str = "online",
@@ -324,6 +429,12 @@ class SuggestionEngine:
         """
         if settings.ai_suggestions == FlagMode.off:
             return []
+
+        # Resolve integer category_id
+        target_category_id: Optional[int] = category_id
+        if target_category_id is None and activity_category:
+            if str(activity_category).isdigit():
+                target_category_id = int(activity_category)
 
         # Extract core name components
         parsed_ar = strip_tokens(normalize_arabic(name_ar), lang="ar")
@@ -358,6 +469,47 @@ class SuggestionEngine:
         resolved_category = CATEGORY_NAME_MAP.get(cat_key, activity_category or "General Business")
 
         # -------------------------------------------------------------
+        # Step 0: Check if Core Brand Token Collides with Active Registry
+        # -------------------------------------------------------------
+        from db.models import TradeNameIndex
+        brand_conflict = False
+        brand_norm_en = normalize_english(brand_en) if brand_en else ""
+        brand_norm_ar = normalize_arabic(brand_ar) if brand_ar else ""
+
+        if brand_norm_en or brand_norm_ar:
+            conditions = []
+            if brand_norm_en:
+                conditions.extend([
+                    TradeNameIndex.normalized_en == brand_norm_en,
+                    TradeNameIndex.normalized_en.like(f"{brand_norm_en} %"),
+                    TradeNameIndex.normalized_en.like(f"% {brand_norm_en}"),
+                    TradeNameIndex.normalized_en.like(f"% {brand_norm_en} %"),
+                ])
+            if brand_norm_ar:
+                conditions.extend([
+                    TradeNameIndex.normalized_ar == brand_norm_ar,
+                    TradeNameIndex.normalized_ar.like(f"{brand_norm_ar} %"),
+                    TradeNameIndex.normalized_ar.like(f"% {brand_norm_ar}"),
+                    TradeNameIndex.normalized_ar.like(f"% {brand_norm_ar} %"),
+                ])
+
+            stmt_brand = select(TradeNameIndex).where(
+                TradeNameIndex.status.in_(["active", "reserved"]),
+                or_(*conditions)
+            )
+            if target_category_id is not None:
+                stmt_brand = stmt_brand.where(TradeNameIndex.category_id == target_category_id)
+
+            res_brand = await self.session.execute(stmt_brand)
+            matched_brands = res_brand.scalars().all()
+            if matched_brands:
+                brand_conflict = True
+                logger.info(
+                    "suggestion_brand_conflict_detected",
+                    extra={"brand_en": brand_en, "brand_ar": brand_ar, "matches": len(matched_brands)}
+                )
+
+        # -------------------------------------------------------------
         # Step 1: Attempt LLM Suggestion Generation (~25 candidates)
         # -------------------------------------------------------------
         try:
@@ -370,34 +522,48 @@ class SuggestionEngine:
                 activity_category=resolved_category,
                 legal_form=legal_form,
                 num_candidates=25,
+                conflict_brand=brand_en if brand_conflict else None,
             )
             await gateway.close()
 
             if batch and batch.suggestions:
                 for s in batch.suggestions:
                     if s.name_ar and s.name_en:
-                        # Enforce strict candidate relevance filter (Requirement 6)
-                        if is_candidate_relevant(s.name_en, s.name_ar, brand_en, brand_ar):
-                            candidates.append((s.name_ar.strip(), s.name_en.strip(), "llm"))
+                        # Enforce strict candidate relevance or anti-conflict filter
+                        if is_candidate_relevant(s.name_en, s.name_ar, brand_en, brand_ar, brand_conflict=brand_conflict):
+                            candidates.append((s.name_ar.strip(), s.name_en.strip(), "alternative" if brand_conflict else "llm"))
         except Exception as exc:
             logger.warning("suggestion_llm_failed_fallback", extra={"error": str(exc)})
 
         # -------------------------------------------------------------
         # Step 2: Category-Tailored Template Fallback (Ambiguity #5) if LLM produced few
         # -------------------------------------------------------------
-        if len(candidates) < 10 and (brand_en or brand_ar):
-            templates_to_use = (
-                CATEGORY_TEMPLATES.get(cat_key)
-                or (CATEGORY_TEMPLATES.get("4") if any(k in cat_key for k in ("rest", "food", "cafe", "4")) else None)
-                or (CATEGORY_TEMPLATES.get("3") if any(k in cat_key for k in ("tech", "soft", "3")) else None)
-                or (CATEGORY_TEMPLATES.get("1") if any(k in cat_key for k in ("trade", "comm", "1")) else None)
-                or DEFAULT_TEMPLATES
-            )
-            for tmpl_ar, tmpl_en in templates_to_use:
-                cand_ar = f"{brand_ar} {tmpl_ar}".strip()
-                cand_en = f"{brand_en} {tmpl_en.title()}".strip()
-                if is_candidate_relevant(cand_en, cand_ar, brand_en, brand_ar):
-                    candidates.append((cand_ar, cand_en, "template"))
+        if len(candidates) < 10:
+            if brand_conflict:
+                templates_to_use = (
+                    CATEGORY_ALTERNATIVE_TEMPLATES.get(cat_key)
+                    or (CATEGORY_ALTERNATIVE_TEMPLATES.get("4") if any(k in cat_key for k in ("rest", "food", "cafe", "4")) else None)
+                    or (CATEGORY_ALTERNATIVE_TEMPLATES.get("3") if any(k in cat_key for k in ("tech", "soft", "3")) else None)
+                    or (CATEGORY_ALTERNATIVE_TEMPLATES.get("1") if any(k in cat_key for k in ("trade", "comm", "1")) else None)
+                    or (CATEGORY_ALTERNATIVE_TEMPLATES.get("2") if any(k in cat_key for k in ("cons", "prof", "2")) else None)
+                    or DEFAULT_ALTERNATIVE_TEMPLATES
+                )
+                for tmpl_ar, tmpl_en in templates_to_use:
+                    if is_candidate_relevant(tmpl_en, tmpl_ar, brand_en, brand_ar, brand_conflict=True):
+                        candidates.append((tmpl_ar, tmpl_en.title(), "alternative"))
+            elif brand_en or brand_ar:
+                templates_to_use = (
+                    CATEGORY_TEMPLATES.get(cat_key)
+                    or (CATEGORY_TEMPLATES.get("4") if any(k in cat_key for k in ("rest", "food", "cafe", "4")) else None)
+                    or (CATEGORY_TEMPLATES.get("3") if any(k in cat_key for k in ("tech", "soft", "3")) else None)
+                    or (CATEGORY_TEMPLATES.get("1") if any(k in cat_key for k in ("trade", "comm", "1")) else None)
+                    or DEFAULT_TEMPLATES
+                )
+                for tmpl_ar, tmpl_en in templates_to_use:
+                    cand_ar = f"{brand_ar} {tmpl_ar}".strip()
+                    cand_en = f"{brand_en} {tmpl_en.title()}".strip()
+                    if is_candidate_relevant(cand_en, cand_ar, brand_en, brand_ar, brand_conflict=False):
+                        candidates.append((cand_ar, cand_en, "template"))
 
         if not candidates:
             return []
@@ -446,13 +612,24 @@ class SuggestionEngine:
             return []
 
         # -------------------------------------------------------------
-        # Step 5: Reservation & Active Registry Check (F18 single set query)
+        # Step 5: Activity-Scoped Reservation & Active Registry Check
+        # Verified against database records and similarity rules (Requirement 4 & 5)
         # -------------------------------------------------------------
         from db.models import TradeNameIndex
+        from rapidfuzz import fuzz
+        import re
+
+        def _clean_canon(s: str) -> str:
+            if not s:
+                return ""
+            s = s.lower()
+            s = re.sub(r"[^\w\s\u0600-\u06FF]", " ", s)
+            return re.sub(r"\s+", " ", s).strip()
 
         norm_ar_list = [c["norm_ar"] for c in clean_candidates]
         norm_en_list = [c["norm_en"] for c in clean_candidates]
 
+        # F18 — Reserved & active names are never suggested (single set query across entire registry)
         stmt = select(TradeNameIndex.normalized_ar, TradeNameIndex.normalized_en).where(
             TradeNameIndex.status.in_(["active", "reserved"]),
             or_(
@@ -465,34 +642,89 @@ class SuggestionEngine:
         reserved_ar = {r[0] for r in reserved_rows}
         reserved_en = {r[1] for r in reserved_rows}
 
+        active_cat_records = []
+        if target_category_id is not None:
+            active_cat_stmt = select(TradeNameIndex.normalized_ar, TradeNameIndex.normalized_en).where(
+                TradeNameIndex.status.in_(["active", "reserved"]),
+                TradeNameIndex.category_id == target_category_id,
+            )
+            act_res = await self.session.execute(active_cat_stmt)
+            active_cat_records = act_res.fetchall()
+        else:
+            active_cat_stmt = select(TradeNameIndex.normalized_ar, TradeNameIndex.normalized_en).where(
+                TradeNameIndex.status.in_(["active", "reserved"]),
+            ).limit(200)
+            act_res = await self.session.execute(active_cat_stmt)
+            active_cat_records = act_res.fetchall()
+
         unreserved: list[dict] = []
+        clean_in_en = normalize_english(name_en) if name_en else ""
+        clean_in_ar = normalize_arabic(name_ar) if name_ar else ""
+
         for cand in clean_candidates:
+            # Rule 1: Never suggest exact active/reserved names
             if cand["norm_ar"] in reserved_ar or cand["norm_en"] in reserved_en:
                 continue
-            unreserved.append(cand)
+
+            # Rule 2: Never suggest the user's exact input trade name back to them
+            if (clean_in_en and cand["norm_en"] == clean_in_en) or (clean_in_ar and cand["norm_ar"] == clean_in_ar):
+                continue
+
+            # Verify candidate against existing names in activity to prevent confusingly similar suggestions
+            cand_canon_en = _clean_canon(cand["norm_en"])
+            cand_canon_ar = _clean_canon(cand["norm_ar"])
+            is_similar_conflict = False
+
+            for act_ar, act_en in active_cat_records:
+                act_canon_en = _clean_canon(act_en or "")
+                act_canon_ar = _clean_canon(act_ar or "")
+
+                if cand_canon_en and act_canon_en:
+                    if cand_canon_en == act_canon_en or fuzz.ratio(cand_canon_en, act_canon_en) >= 82:
+                        is_similar_conflict = True
+                        break
+                if cand_canon_ar and act_canon_ar:
+                    if cand_canon_ar == act_canon_ar or fuzz.ratio(cand_canon_ar, act_canon_ar) >= 82:
+                        is_similar_conflict = True
+                        break
+
+            if not is_similar_conflict:
+                unreserved.append(cand)
 
         # -------------------------------------------------------------
         # Step 6: Formatting (F8 Legal Form, F17 Uppercase English)
         # -------------------------------------------------------------
+        lf_en, lf_ar = format_legal_form_suffix(legal_form)
         final_suggestions: list[SuggestionItemDTO] = []
-        for cand in unreserved[:limit]:
-            final_ar = cand["raw_ar"]
-            # F17: All English suggestion names returned in UPPER CASE
-            final_en = cand["raw_en"].upper()
 
-            # F8: Append legal form if specified and not already present
-            if legal_form:
-                lf_clean = legal_form.strip()
-                if lf_clean and lf_clean.upper() not in final_en:
-                    final_en = f"{final_en} {lf_clean.upper()}"
-                if lf_clean and lf_clean not in final_ar:
-                    final_ar = f"{final_ar} {lf_clean}"
+        # Provide a balanced mix: some with clean trade names, some with legal form suffix (LLC / ذ.م.م)
+        # Companies can choose whether to include the legal suffix in their trade name or not
+        for idx, cand in enumerate(unreserved[:limit]):
+            base_ar = cand["raw_ar"]
+            base_en = cand["raw_en"].upper()
+
+            # Clean off any duplicate trailing legal form if already embedded in template/raw name
+            for verbose_en in ("LIMITED LIABILITY COMPANY", "SOLE PROPRIETORSHIP", "PARTNERSHIP", "LLC", "L.L.C."):
+                if base_en.endswith(f" {verbose_en}"):
+                    base_en = base_en[:-len(verbose_en)-1].strip()
+            for verbose_ar in ("LIMITED LIABILITY COMPANY", "ذ.م.م", "شركة ذات مسؤولية محدودة", "مؤسسة فردية", "شركة تضامنية"):
+                if base_ar.endswith(f" {verbose_ar}"):
+                    base_ar = base_ar[:-len(verbose_ar)-1].strip()
+
+            # Second half of suggestions (or odd indices) feature the concise legal form suffix if specified
+            include_suffix = bool(lf_en and (idx % 2 == 1 or idx >= (limit // 2)))
+            if include_suffix:
+                final_en = f"{base_en} {lf_en}".strip()
+                final_ar = f"{base_ar} {lf_ar}".strip()
+            else:
+                final_en = base_en
+                final_ar = base_ar
 
             final_suggestions.append(
                 SuggestionItemDTO(
                     name_ar=final_ar,
                     name_en=final_en,
-                    score=1.0 if cand["source"] == "llm" else 0.85,
+                    score=1.0 if cand["source"] == "llm" else (0.90 if cand["source"] == "alternative" else 0.85),
                     source=cand["source"],
                 )
             )

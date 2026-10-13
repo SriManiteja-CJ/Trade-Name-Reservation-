@@ -251,6 +251,6 @@ async def test_register_trade_name_duplicate_rejected(client: AsyncClient, db_se
     assert data["status"] == "rejected"
     assert data["is_existing"] is True
     assert len(data["suggestions"]) > 0
-    # Suggestions must preserve the brand token "Teja"
-    assert any("teja" in s["name_en"].lower() for s in data["suggestions"])
+    # Suggestions must not repeat the conflicting existing brand token
+    assert not any("teja" in s["name_en"].lower() for s in data["suggestions"])
 

@@ -263,8 +263,24 @@ def build_suggestions_user_message(
     activity_category: Optional[str] = None,
     legal_form: Optional[str] = None,
     num_candidates: int = 25,
+    conflict_brand: Optional[str] = None,
 ) -> str:
     """Build the prompt user message for Stage ⑥ suggestions."""
+    if conflict_brand:
+        return (
+            f"Generate {num_candidates} compliant bilingual trade name suggestions for DED Umm Al Quwain.\n\n"
+            f"BASE PROPOSED NAME:\n<trade_name>{name_ar} / {name_en}</trade_name>\n\n"
+            f"ACTIVITY CATEGORY: {activity_category or 'General Business'}\n"
+            f"LEGAL FORM: {legal_form or 'None specified'}\n\n"
+            f"CRITICAL REGISTRY CONFLICT WARNING:\n"
+            f"The distinctive brand mark '{conflict_brand}' is ALREADY REGISTERED by an active company in the official registry.\n"
+            f"Under UAE Commercial Trade Name regulations, any variations containing '{conflict_brand}' are strictly BLOCKED due to confusion and trademark collision.\n\n"
+            "Instructions:\n"
+            f"- Do NOT use the word '{conflict_brand}' or any transliterations of it in any of the suggestions.\n"
+            "- Propose creative, distinctive, memorable, and premium ALTERNATIVE BRAND NAMES tailored to this activity category.\n"
+            "- Ensure all names are phonetically matched between Arabic and English.\n"
+            "- Return a JSON object with a 'suggestions' list of objects matching the schema."
+        )
     return (
         f"Generate {num_candidates} compliant bilingual trade name suggestions for DED Umm Al Quwain.\n\n"
         f"BASE TRADE NAME:\n<trade_name>{name_ar} / {name_en}</trade_name>\n\n"
@@ -276,6 +292,7 @@ def build_suggestions_user_message(
         "- Do NOT return arbitrary or unrelated brand names.\n"
         "- Return ONLY valid JSON matching the schema."
     )
+
 
 
 DEFAULT_TRANSLITERATION_SYSTEM_PROMPT = """You are an Arabic-English phonetic transliteration and orthography specialist for DED Umm Al Quwain.
@@ -292,10 +309,20 @@ DEFAULT_TRANSLITERATE_TO_ARABIC_PROMPT = """You are an official UAE Trade Name R
 Translate/transliterate the English trade name into its official Arabic trade name equivalent.
 
 Guidelines:
-1. Brand names / proper nouns: Transliterate phonetically into standard Arabic preserving brand identity (e.g. Teja -> تيجا, Amazon -> أمازون, Falcon -> فالكون, Oasis -> واحة or أواسيس, Apex -> أبيكس, Star -> ستار).
+1. Brand names / proper nouns: Transliterate phonetically into standard Arabic preserving brand identity (e.g. Teja -> تيجا, Amazon -> أمازون, Falcon -> فالكون, Oasis -> واحة or أواسيس, Apex -> أبيكس, Star -> ستار, Cloudjune -> كلاودجون).
 2. Business activities / commercial descriptors: Translate into legal Arabic terminology with standard prefixes (e.g. Trading -> للتجارة, General Trading -> للتجارة العامة, Technologies -> للتكنولوجيا, Tech -> للتقنية, Software -> للبرمجيات, Solutions -> للحلول, Systems -> للأنظمة, Restaurant -> مطعم, Cafe -> كافيه, Logistics -> للخدمات اللوجستية, Contracting -> للمقاولات, Real Estate -> للعقارات).
 3. Legal form: If present (e.g. LLC -> ذ.م.م).
 4. Return ONLY a valid JSON object matching: {"arabic_name": "...", "confidence": 0.95} with no explanation or markdown wrapper.
+"""
+
+DEFAULT_TRANSLITERATE_TO_ENGLISH_PROMPT = """You are an official UAE Trade Name Registrar and English orthography expert for DED Umm Al Quwain.
+Translate/transliterate the Arabic trade name into its official English trade name equivalent.
+
+Guidelines:
+1. Brand names / proper nouns: Transliterate phonetically into standard Latin/English script preserving brand identity (e.g. تيجا -> Teja, أمازون -> Amazon, فالكون -> Falcon, الصقر -> Al Saqr, الواحة -> Al Waha, واحة -> Oasis, أبيكس -> Apex, ستار -> Star, كلاودجون -> Cloudjune).
+2. Business activities / commercial descriptors: Translate into standard legal English terminology (e.g. للتجارة -> Trading, للتجارة العامة -> General Trading, للتكنولوجيا -> Technologies, للتقنية -> Technology, للبرمجيات -> Software, للحلول -> Solutions, للأنظمة -> Systems, مطعم -> Restaurant, كافيه / مقهى -> Cafe, للخدمات اللوجستية -> Logistics Services, للمقاولات -> Contracting, للعقارات -> Real Estate).
+3. Legal form: If present (e.g. ذ.م.م -> LLC).
+4. Return ONLY a valid JSON object matching: {"english_name": "...", "confidence": 0.95} with no explanation or markdown wrapper.
 """
 
 

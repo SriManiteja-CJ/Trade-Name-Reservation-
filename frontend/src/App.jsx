@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import FigmaSidebar from './components/FigmaSidebar';
-import FigmaHeader from './components/FigmaHeader';
+import AppSidebar from './components/AppSidebar';
+import AppHeader from './components/AppHeader';
 import TradeNameReservationFlow from './components/TradeNameReservationFlow';
 import ApplicantCompanyPortal from './components/ApplicantCompanyPortal';
 import RegistrySearchTab from './components/RegistrySearchTab';
@@ -32,8 +32,8 @@ export default function App() {
 
   return (
     <div className={`figma-app-shell ${isSidebarCollapsed ? 'sidebar-is-collapsed' : ''}`}>
-      {/* Figma Dark Navy Left Sidebar */}
-      <FigmaSidebar
+      {/* Dark Navy Left Sidebar */}
+      <AppSidebar
         activeNav={activeNav}
         setActiveNav={setActiveNav}
         isAr={isAr}
@@ -43,8 +43,8 @@ export default function App() {
 
       {/* Main Presentation Area */}
       <div className={`figma-main-container ${isSidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
-        {/* Figma Top Header with Official DED Logo & Profile */}
-        <FigmaHeader
+        {/* Top Header with Official DED Logo & Profile */}
+        <AppHeader
           lang={lang}
           setLang={setLang}
           activeNav={activeNav}

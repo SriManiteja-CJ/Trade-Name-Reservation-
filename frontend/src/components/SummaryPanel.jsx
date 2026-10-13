@@ -1,11 +1,11 @@
 import React from 'react';
 
-export default function FigmaSummaryPanel({
+export default function SummaryPanel({
   isAr,
   mode = 'initial', // 'initial' (Screens 2 & 6) vs 'summary' (Screens 3, 4, 5)
   reservationType = 'new', // 'new' vs 'branch'
   selectedName,
-  legalForm = 'LIMITED LIABILITY COMPANY',
+  legalForm = 'Limited Liability Company',
   selectedActivity,
   parentLicenseNo = '123456',
   onSubmitPay,

@@ -1,6 +1,6 @@
 import React from 'react';
 
-export default function FigmaSidebar({
+export default function AppSidebar({
   activeNav,
   setActiveNav,
   isAr,

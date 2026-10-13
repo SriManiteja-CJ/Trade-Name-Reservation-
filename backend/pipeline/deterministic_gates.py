@@ -149,13 +149,15 @@ class DeterministicGates:
     async def run(
         self,
         composed: ComposedName,
+        category_id: Optional[int] = None,
         exclude_trade_name_id: Optional[int] = None,
     ) -> list[GateSignal]:
         """
-        Run all deterministic gate checks.
+        Run all deterministic gate checks with activity category scoping.
 
         Args:
             composed:               Output from NameComposer (Stage ①+composer)
+            category_id:            Activity category ID for scoped availability & duplicate check
             exclude_trade_name_id:  ID of the record being edited (F2, Ambiguity #7)
 
         Returns:
@@ -165,15 +167,26 @@ class DeterministicGates:
         signals: list[GateSignal] = []
 
         # -----------------------------------------------------------------
-        # F2 — Exact duplicate check
+        # F2 — Exact duplicate check (Scoped to category_id if provided)
         # Always run — even when F12 skip_word_checks=True
-        # (Ambiguity #2 resolution: F2 is not a "word check"; always runs)
         # -----------------------------------------------------------------
         duplicates = await self._index.lookup_exact(
             normalized_ar=composed.normalized_ar,
             normalized_en=composed.normalized_en,
+            category_id=category_id,
             exclude_trade_name_id=exclude_trade_name_id,
         )
+        if not duplicates and category_id is not None:
+            # Fallback check across all active categories in case client category_id was misaligned
+            cross_duplicates = await self._index.lookup_exact(
+                normalized_ar=composed.normalized_ar,
+                normalized_en=composed.normalized_en,
+                category_id=None,
+                exclude_trade_name_id=exclude_trade_name_id,
+            )
+            if cross_duplicates:
+                duplicates = cross_duplicates
+
         for dup in duplicates:
             signals.append(
                 GateSignal(
@@ -189,6 +202,58 @@ class DeterministicGates:
                     similar_entry=dup,
                 )
             )
+
+        # -----------------------------------------------------------------
+        # Duplicate and Similar Name Prevention under the same activity type
+        # Identifies minor spelling variations, punctuation, and typos (Requirement 2)
+        # -----------------------------------------------------------------
+        if category_id is not None and not any(s.source == "exact_duplicate" for s in signals):
+            similar_matches = await self._index.find_similar_in_category(
+                normalized_ar=composed.normalized_ar,
+                normalized_en=composed.normalized_en,
+                category_id=category_id,
+                exclude_trade_name_id=exclude_trade_name_id,
+                similarity_threshold=0.82,
+            )
+            for sim_entry, sim_score, match_type in similar_matches[:3]:
+                if sim_score >= 0.99 or match_type == "exact_duplicate":
+                    signals.append(
+                        GateSignal(
+                            signal_type=SignalType.BLOCKED,
+                            source="exact_duplicate",
+                            category=None,
+                            severity="block",
+                            matched_term=f"ID:{sim_entry.trade_name_id}",
+                            reason_en=_REASON_EXACT_DUP_EN,
+                            reason_ar=_REASON_EXACT_DUP_AR,
+                            fix_en=_FIX_EXACT_DUP_EN,
+                            fix_ar=_FIX_EXACT_DUP_AR,
+                            similar_entry=sim_entry,
+                        )
+                    )
+                else:
+                    signals.append(
+                        GateSignal(
+                            signal_type=SignalType.NEEDS_REVIEW,
+                            source="similar_name",
+                            category="similar_name",
+                            severity="review",
+                            matched_term=f"ID:{sim_entry.trade_name_id}",
+                            reason_en=(
+                                f"This trade name is confusingly similar ({int(sim_score * 100)}% match) "
+                                f"to active registered trade name '{sim_entry.normalized_en or sim_entry.normalized_ar}' "
+                                f"under the selected activity type."
+                            ),
+                            reason_ar=(
+                                f"هذا الاسم التجاري مشابه لدرجة تثير الالتباس (نسبة تطابق {int(sim_score * 100)}%) "
+                                f"مع الاسم التجاري النشط '{sim_entry.normalized_ar or sim_entry.normalized_en}' "
+                                f"ضمن نفس فئة النشاط."
+                            ),
+                            fix_en="Modify the proposed name spelling or add distinctive terms to prevent confusion.",
+                            fix_ar="يرجى تعديل الصياغة أو إضافة كلمات مميزة لتجنب الالتباس مع الأسماء المسجلة.",
+                            similar_entry=sim_entry,
+                        )
+                    )
 
         # -----------------------------------------------------------------
         # F4 — Lexicon word checks

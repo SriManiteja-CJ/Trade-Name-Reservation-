@@ -1,6 +1,6 @@
 import React from 'react';
 
-export default function FigmaHeroBanner({ isAr, title, breadcrumbs }) {
+export default function HeroBanner({ isAr, title, breadcrumbs }) {
   const defaultBreadcrumb = isAr
     ? 'خدمات الدائرة الذكية - دليل الخدمات'
     : 'DED Smart Services - Service Catalogue';
