@@ -32,7 +32,8 @@ import uuid
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth import get_current_channel
@@ -134,6 +135,12 @@ async def validate_with_suggestion(
     if "ar" in raw_lang.lower():
         pref_lang = "ar"
 
+    if request.ActivityCategoryId is not None and get_category_by_id(request.ActivityCategoryId) is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Unknown activity category ID.",
+        )
+
     # Step 1: Compose names and evaluate F10, F11, F12
     composed = compose(
         name_ar=request.NameAr,
@@ -156,6 +163,7 @@ async def validate_with_suggestion(
     async def _run_gates() -> object:
         return await gates.run(
             composed=composed,
+            category_id=request.ActivityCategoryId,
             exclude_trade_name_id=request.TradeNameId,
         )
 
@@ -164,6 +172,7 @@ async def validate_with_suggestion(
             return await retriever.retrieve(
                 normalized_ar=composed.normalized_ar,
                 normalized_en=composed.normalized_en,
+                category_id=request.ActivityCategoryId,
                 exclude_trade_name_id=request.TradeNameId,
                 limit=10,
             )
@@ -206,16 +215,23 @@ async def validate_with_suggestion(
         if settings.ai_suggestions == FlagMode.off:
             return []
         try:
+            try:
+                if db.is_active:
+                    await db.rollback()
+            except Exception:
+                pass
             engine = SuggestionEngine(session=db)
             generated = await engine.generate(
                 name_ar=request.NameAr,
                 name_en=request.NameEn,
                 activity_category=str(request.ActivityCategoryId) if request.ActivityCategoryId else None,
+                category_id=request.ActivityCategoryId,
                 legal_form=request.NewLegalForm or request.OldLegalForm or request.LegalForm,
                 request_id=str(request.RequestId) if request.RequestId else "suggestion-req",
                 channel=channel,
                 limit=10,
             )
+            print("GENERATED COUNT:", len(generated))
             return [
                 SuggestionResponseItem(
                     name_ar=g.name_ar,
@@ -226,6 +242,9 @@ async def validate_with_suggestion(
                 for g in generated
             ]
         except Exception as sug_err:
+            print("SUGGESTIONS ERROR:", type(sug_err), sug_err)
+            import traceback
+            traceback.print_exc()
             logger.warning("suggestion_generation_failed", extra={"error": str(sug_err)})
             return []
 
@@ -311,9 +330,26 @@ async def validate_with_suggestion(
             logger.warning("copilot_brief_generation_failed", extra={"error": str(copilot_err)})
 
     dup_signal = next((s for s in gate_signals if s.source == "exact_duplicate"), None)
-    is_existing = dup_signal is not None
-    matched_name_ar = dup_signal.similar_entry.normalized_ar if (dup_signal and dup_signal.similar_entry) else None
-    matched_name_en = dup_signal.similar_entry.normalized_en if (dup_signal and dup_signal.similar_entry) else None
+    base_signal = next((s for s in gate_signals if s.source == "reserved_base_name"), None)
+    sim_signal = next((s for s in gate_signals if s.source == "similar_name"), None)
+    conflict_signal = dup_signal or base_signal or sim_signal
+
+    is_existing = (dup_signal is not None) or (base_signal is not None)
+    matched_entry = conflict_signal.similar_entry if (conflict_signal and conflict_signal.similar_entry) else None
+    matched_name_ar = matched_entry.normalized_ar if matched_entry else None
+    matched_name_en = matched_entry.normalized_en if matched_entry else None
+    conflict_type = conflict_signal.source if conflict_signal else None
+
+    # Resolve registered activity name dynamically
+    from pipeline.base_name_extractor import canonical_base_name, extract_base_name
+
+    reg_cat_id = matched_entry.category_id if matched_entry else (request.ActivityCategoryId if is_existing else None)
+    reg_cat_meta = get_category_by_id(reg_cat_id) if reg_cat_id else None
+    reg_act_en = reg_cat_meta["name_en"] if reg_cat_meta else None
+    reg_act_ar = reg_cat_meta["name_ar"] if reg_cat_meta else None
+
+    ext_req = extract_base_name(request.NameEn or request.NameAr or "")
+    prot_base = ext_req.base_name if is_existing else None
 
     return ValidateResponse(
         # Legacy fields (N9 — exact field names and types)
@@ -330,6 +366,11 @@ async def validate_with_suggestion(
         is_existing=is_existing,
         matched_name_ar=matched_name_ar,
         matched_name_en=matched_name_en,
+        conflict_type=conflict_type,
+        protected_base_name=prot_base,
+        registered_category_id=reg_cat_id,
+        registered_activity_name_en=reg_act_en,
+        registered_activity_name_ar=reg_act_ar,
         reasons=reasons_resp,
         similarNames=similar_names_resp,
         activityFit=activity_fit_resp,
@@ -340,43 +381,89 @@ async def validate_with_suggestion(
 @router.get(
     "/IsTradeNameExist",
     response_model=IsTradeNameExistResponse,
-    summary="Check if a trade name already exists in the active registry (F2)",
+    summary="Check if a trade name or base name already exists in the active registry (F2)",
 )
 async def is_trade_name_exist(
     NameAr: Optional[str] = Query(None, description="Arabic trade name"),
     NameEn: Optional[str] = Query(None, description="English trade name"),
+    CategoryId: Optional[int] = Query(None, description="Activity Category ID"),
     TradeNameId: Optional[int] = Query(None, description="Current trade name ID to exclude"),
     db: AsyncSession = Depends(get_db),
 ) -> IsTradeNameExistResponse:
     """
     GET TradeName/IsTradeNameExist (spec §5.2, F2).
-    Checks against active names, case/space insensitive, excluding TradeNameId.
+    Checks against active names, case/space insensitive, excluding TradeNameId, scoped by CategoryId if provided.
+    Also validates base-name reservation under CategoryId (Requirements 1 & 2).
     """
     if not NameAr and not NameEn:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="At least one of NameAr or NameEn must be provided",
         )
-
-    norm_ar = normalize_arabic(NameAr) if NameAr else ""
-    norm_en = normalize_english(NameEn) if NameEn else ""
-
-    index_repo = TradeNameIndexRepository(db)
-    duplicates = await index_repo.lookup_exact(
-        normalized_ar=norm_ar,
-        normalized_en=norm_en,
-        exclude_trade_name_id=TradeNameId,
-    )
-
-    if duplicates:
-        first_dup = duplicates[0]
-        return IsTradeNameExistResponse(
-            Exists=True,
-            MatchedNameAr=first_dup.normalized_ar,
-            MatchedNameEn=first_dup.normalized_en,
+    if CategoryId is None or get_category_by_id(CategoryId) is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A valid activity category ID is required for activity-scoped availability checks.",
         )
 
-    return IsTradeNameExistResponse(Exists=False, MatchedNameAr=None, MatchedNameEn=None)
+    from pipeline.name_composer import compose
+    from pipeline.base_name_extractor import extract_base_name
+    from pipeline.deterministic_gates import DeterministicGates, SignalType
+
+    signals = await DeterministicGates(
+        index_repo=TradeNameIndexRepository(db),
+        lexicon_repo=LexiconRepository(db),
+    ).run(
+        composed=compose(
+            name_ar=NameAr or "",
+            name_en=NameEn or "",
+            operation_type="new",
+            is_outside_uaq=False,
+            old_legal_form=None,
+            new_legal_form=None,
+            previous_name_ar=None,
+            previous_name_en=None,
+        ),
+        category_id=CategoryId,
+        exclude_trade_name_id=TradeNameId,
+    )
+    conflict = next(
+        (item for item in signals if item.signal_type in (SignalType.BLOCKED, SignalType.NEEDS_REVIEW)),
+        None,
+    )
+    if conflict is None:
+        return IsTradeNameExistResponse(Exists=False, exists=False)
+
+    matched = conflict.similar_entry
+    registered_category = matched.category_id if matched else None
+    registered_activity = get_category_by_id(registered_category) if registered_category else None
+    is_blocked = conflict.signal_type == SignalType.BLOCKED
+    availability = "unavailable" if is_blocked else "needs_review"
+    protected = None
+    if conflict.source == "reserved_base_name":
+        protected = extract_base_name(NameEn or NameAr or "").base_name or None
+    return IsTradeNameExistResponse(
+        Exists=is_blocked,
+        exists=is_blocked,
+        MatchedNameAr=matched.normalized_ar if matched else None,
+        matched_name_ar=matched.normalized_ar if matched else None,
+        MatchedNameEn=matched.normalized_en if matched else None,
+        matched_name_en=matched.normalized_en if matched else None,
+        ConflictType=conflict.source,
+        conflict_type=conflict.source,
+        ProtectedBaseName=protected,
+        protected_base_name=protected,
+        RegisteredCategoryId=registered_category,
+        registered_category_id=registered_category,
+        RegisteredActivityNameEn=registered_activity["name_en"] if registered_activity else None,
+        registered_activity_name_en=registered_activity["name_en"] if registered_activity else None,
+        RegisteredActivityNameAr=registered_activity["name_ar"] if registered_activity else None,
+        registered_activity_name_ar=registered_activity["name_ar"] if registered_activity else None,
+        AvailabilityStatus=availability,
+        availability_status=availability,
+        NeedsReview=not is_blocked,
+        needs_review=not is_blocked,
+    )
 
 
 @router.get(
@@ -499,6 +586,102 @@ async def get_activity_categories() -> list[dict[str, Any]]:
     return get_all_categories()
 
 
+async def _filter_unreserved_trade_names(
+    candidates: list[dict[str, str]],
+    input_en: str,
+    input_ar: str,
+    session: AsyncSession,
+) -> list[dict[str, str]]:
+    """
+    Ensure suggested trade names are strictly unreserved, available,
+    and distinct from the user's input name (Requirement 6, F18).
+    """
+    if not candidates:
+        return []
+
+    clean_in_en = normalize_english(input_en) if input_en else ""
+    clean_in_ar = normalize_arabic(input_ar) if input_ar else ""
+
+    cleaned_candidates: list[dict[str, str]] = []
+    seen_norm: set[tuple[str, str]] = set()
+
+    for c in candidates:
+        cand_en = (c.get("name_en") or "").strip()
+        cand_ar = (c.get("name_ar") or "").strip()
+        if not cand_en or not cand_ar:
+            continue
+        norm_en = normalize_english(cand_en)
+        norm_ar = normalize_arabic(cand_ar)
+
+        # Drop candidate if it matches the user's input name
+        if (clean_in_en and norm_en == clean_in_en) or (clean_in_ar and norm_ar == clean_in_ar):
+            continue
+
+        key = (norm_en, norm_ar)
+        if key in seen_norm:
+            continue
+        seen_norm.add(key)
+        cleaned_candidates.append({
+            "name_en": cand_en,
+            "name_ar": cand_ar,
+            "norm_en": norm_en,
+            "norm_ar": norm_ar,
+        })
+
+    if not cleaned_candidates:
+        return []
+
+    norm_en_list = [c["norm_en"] for c in cleaned_candidates]
+    norm_ar_list = [c["norm_ar"] for c in cleaned_candidates]
+
+    # Reset any rolled-back transaction state safely before querying
+    try:
+        if session.is_active:
+            await session.rollback()
+    except Exception:
+        pass
+
+    # Batch query entire active/reserved registry to exclude existing names
+    stmt = select(TradeNameIndex.normalized_en, TradeNameIndex.normalized_ar).where(
+        TradeNameIndex.status.in_(["active", "reserved"]),
+        or_(
+            TradeNameIndex.normalized_en.in_(norm_en_list),
+            TradeNameIndex.normalized_ar.in_(norm_ar_list),
+        ),
+    )
+    res = await session.execute(stmt)
+    reserved_rows = res.fetchall()
+    reserved_en = {r[0] for r in reserved_rows}
+    reserved_ar = {r[1] for r in reserved_rows}
+
+    # Also check active names for confusing similarity (>= 82%)
+    stmt_active = select(TradeNameIndex.normalized_en, TradeNameIndex.normalized_ar).where(
+        TradeNameIndex.status.in_(["active", "reserved"]),
+    ).limit(300)
+    res_active = await session.execute(stmt_active)
+    active_rows = res_active.fetchall()
+
+    from rapidfuzz import fuzz
+    verified: list[dict[str, str]] = []
+    for c in cleaned_candidates:
+        if c["norm_en"] in reserved_en or c["norm_ar"] in reserved_ar:
+            continue
+
+        is_conflict = False
+        for act_en, act_ar in active_rows:
+            if act_en and (c["norm_en"] == act_en or fuzz.ratio(c["norm_en"], act_en) >= 82):
+                is_conflict = True
+                break
+            if act_ar and (c["norm_ar"] == act_ar or fuzz.ratio(c["norm_ar"], act_ar) >= 82):
+                is_conflict = True
+                break
+
+        if not is_conflict:
+            verified.append({"name_en": c["name_en"], "name_ar": c["name_ar"]})
+
+    return verified
+
+
 @router.post(
     "/SuggestCategory",
     response_model=SuggestCategoryResponse,
@@ -548,7 +731,21 @@ async def suggest_category(
         recommended_act = llm_output.get("recommended_activity_type")
         available_acts = llm_output.get("available_activity_types") or cat_entry["representative_activities"]
         if not recommended_act and available_acts:
-            recommended_act = available_acts[0]
+            name_tokens = (f"{norm_en} {norm_ar}").lower().split()
+            for rep_act in available_acts:
+                if any(tok in rep_act.lower() for tok in name_tokens if len(tok) >= 4):
+                    recommended_act = rep_act
+                    break
+            if not recommended_act:
+                recommended_act = available_acts[0]
+
+        raw_trade_names = llm_output.get("recommended_trade_names", [])
+        verified_trade_names = await _filter_unreserved_trade_names(
+            candidates=raw_trade_names,
+            input_en=norm_en,
+            input_ar=norm_ar,
+            session=db,
+        )
 
         return SuggestCategoryResponse(
             status=llm_output.get("status", "match"),
@@ -563,7 +760,7 @@ async def suggest_category(
             suggested_activity_type=recommended_act or cat_entry["name_en"],
             suggested_activities=available_acts,
             activity_categories=cat_entry.get("isic_codes", []),
-            recommended_trade_names=llm_output.get("recommended_trade_names", []),
+            recommended_trade_names=verified_trade_names,
             reason_en=llm_output.get("reason_en") or llm_output.get("reason") or (
                 f"The trade name strongly implies {cat_entry['name_en']} activity ('{recommended_act}'), which conflicts with '{act_type}'."
                 if llm_output.get("mismatch_detected")
@@ -628,6 +825,18 @@ async def suggest_category(
 
     status_str = "mismatch" if is_mismatch else ("clarification_needed" if clarification_needed else ("generic_activity" if act_lower in ["tech", "technology", "food", "services", "business"] else "match"))
 
+    best_act_type = None
+    if matched_cat.get("representative_activities"):
+        name_tokens = (f"{norm_en} {norm_ar}").lower().split()
+        for rep_act in matched_cat["representative_activities"]:
+            if any(tok in rep_act.lower() for tok in name_tokens if len(tok) >= 4):
+                best_act_type = rep_act
+                break
+        if not best_act_type:
+            best_act_type = matched_cat["representative_activities"][0]
+    else:
+        best_act_type = matched_cat["name_en"]
+
     return SuggestCategoryResponse(
         status=status_str,
         is_match=not is_mismatch,
@@ -638,10 +847,10 @@ async def suggest_category(
         original_activity=act_type,
         suggested_category_code=matched_cat["code"],
         category_id=matched_cat["category_id"],
-        suggested_activity_type=matched_cat["representative_activities"][0] if matched_cat["representative_activities"] else matched_cat["name_en"],
+        suggested_activity_type=best_act_type,
         suggested_activities=matched_cat["representative_activities"],
         activity_categories=matched_cat.get("isic_codes", []),
-        recommended_trade_names=alt_names,
+        recommended_trade_names=await _filter_unreserved_trade_names(alt_names, norm_en, norm_ar, db),
         reason_en=mismatch_reason_en or f"Approved activity category aligned with {matched_cat['name_en']}.",
         reason_ar=mismatch_reason_ar or f"فئة النشاط المعتمدة وفق {matched_cat['name_ar']}.",
         verified=True,
@@ -727,10 +936,93 @@ def _heuristic_transliterate(english_name: str) -> str:
     return " ".join(res_tokens)
 
 
+def _heuristic_transliterate_ar_to_en(arabic_name: str) -> str:
+    """Lightweight deterministic fallback for Arabic to English if LLM is unavailable."""
+    if not arabic_name:
+        return ""
+    from pipeline.suggestion_engine import transliterate_ar_to_en_token
+
+    phrase_map = {
+        "للتجارة العامة": "General Trading",
+        "تجارة عامة": "General Trading",
+        "للحلول البرمجية": "Software Solutions",
+        "للحلول الذكية": "Smart Solutions",
+        "للحلول الرقمية": "Digital Solutions",
+        "لحلول تقنية المعلومات": "IT Solutions",
+        "للنقل والشحن": "Transport & Cargo",
+        "المجموعة التجارية": "Commercial Group",
+        "للمقاولات العامة": "General Contracting",
+        "لمقاولات البناء": "Building Contracting",
+        "للخدمات اللوجستية": "Logistics Services",
+        "خدمات لوجستية": "Logistics Services",
+        "للوجبات السريعة": "Fast Food",
+        "لتأجير السيارات": "Car Rental",
+        "للعقارات": "Real Estate",
+    }
+    word_map = {
+        "للتجارة": "Trading",
+        "تجارة": "Trading",
+        "للتكنولوجيا": "Technologies",
+        "تكنولوجيا": "Technologies",
+        "للتقنية": "Technology",
+        "تقنية": "Technology",
+        "للبرمجيات": "Software",
+        "برمجيات": "Software",
+        "للحلول": "Solutions",
+        "حلول": "Solutions",
+        "للأنظمة": "Systems",
+        "أنظمة": "Systems",
+        "للخدمات": "Services",
+        "خدمات": "Services",
+        "للاستشارات": "Consultancy",
+        "استشارات": "Consultancy",
+        "للمقاولات": "Contracting",
+        "مقاولات": "Contracting",
+        "كافيه": "Cafe",
+        "مقهى": "Cafe",
+        "مطعم": "Restaurant",
+        "مطاعم": "Restaurants",
+        "مجموعة": "Group",
+        "شركة": "Company",
+        "مؤسسة": "Establishment",
+        "تيجا": "Teja",
+        "فالكون": "Falcon",
+        "صحراء": "Sahra",
+        "صحرا": "Sahra",
+        "ستار": "Star",
+        "الواحة": "Al Waha",
+        "واحة": "Oasis",
+        "برايم": "Prime",
+        "أبيكس": "Apex",
+        "كلاودجون": "Cloudjune",
+        "نور": "Noor",
+        "النور": "Al Noor",
+    }
+
+    norm = arabic_name.strip()
+    for phrase, en in phrase_map.items():
+        if phrase in norm:
+            norm = norm.replace(phrase, f" {en} ")
+
+    tokens = [t.strip() for t in norm.split() if t.strip()]
+    res_tokens = []
+    for token in tokens:
+        # Check if already Latin/English token
+        if any('a' <= c.lower() <= 'z' for c in token):
+            res_tokens.append(token)
+        elif token in word_map:
+            res_tokens.append(word_map[token])
+        else:
+            translit = transliterate_ar_to_en_token(token)
+            res_tokens.append(translit or token)
+
+    return " ".join(res_tokens).title()
+
+
 @router.post(
     "/Transliterate",
     response_model=TransliterateResponse,
-    summary="Generate DED-compliant Arabic trade name from English (AI-Powered)",
+    summary="Generate DED-compliant bidirectional trade name transliteration (English <-> Arabic)",
 )
 async def transliterate_trade_name(
     request: TransliterateRequest,
@@ -741,15 +1033,39 @@ async def transliterate_trade_name(
     POST TradeName/Transliterate
     Uses LLM to perform contextual hybrid transliteration (phonetic brand tokens)
     and legal translation (commercial activities / descriptors) according to UAE DED standards.
+    Supports both English -> Arabic and Arabic -> English.
     """
     clean_en = (request.NameEn or "").strip()
-    if not clean_en:
+    clean_ar = (request.NameAr or "").strip()
+
+    if not clean_en and not clean_ar:
         return TransliterateResponse(name_en="", arabic_name="", confidence=1.0)
 
-    # 1. Attempt AI LLM Transliteration
+    redis_client = _get_redis_client()
+    gateway = LlmGateway(session=db, redis_client=redis_client)
+
+    # 1. Arabic -> English Transliteration
+    if clean_ar and not clean_en:
+        try:
+            llm_res = await gateway.transliterate_to_english(name_ar=clean_ar, channel=channel)
+            if llm_res and llm_res.get("english_name"):
+                return TransliterateResponse(
+                    name_en=llm_res["english_name"].strip(),
+                    arabic_name=clean_ar,
+                    confidence=float(llm_res.get("confidence", 0.95)),
+                )
+        except Exception as exc:
+            logger.warning("llm_transliterate_ar_to_en_failed", extra={"error": str(exc)})
+
+        fallback_en = _heuristic_transliterate_ar_to_en(clean_ar)
+        return TransliterateResponse(
+            name_en=fallback_en,
+            arabic_name=clean_ar,
+            confidence=0.75,
+        )
+
+    # 2. English -> Arabic Transliteration
     try:
-        redis_client = _get_redis_client()
-        gateway = LlmGateway(session=db, redis_client=redis_client)
         llm_res = await gateway.transliterate_to_arabic(name_en=clean_en, channel=channel)
         if llm_res and llm_res.get("arabic_name"):
             return TransliterateResponse(
@@ -760,7 +1076,7 @@ async def transliterate_trade_name(
     except Exception as exc:
         logger.warning("llm_transliteration_route_fallback", extra={"error": str(exc)})
 
-    # 2. Resilient heuristic fallback if LLM is temporarily unavailable
+    # Resilient heuristic fallback if LLM is temporarily unavailable
     fallback_ar = _heuristic_transliterate(clean_en)
     return TransliterateResponse(
         name_en=clean_en,
@@ -860,37 +1176,132 @@ async def register_trade_name(
     2. If not existing -> accept and insert into database with active status.
     3. Concurrency check: database lookup immediately prior to insert ensures atomicity.
     """
-    if not (request.name_ar or request.name_en):
+    from pipeline.activity_catalogue import get_category_by_id
+    from pipeline.base_name_extractor import canonical_base_name, extract_base_name
+
+    name_en = (getattr(request, "NameEn", None) or getattr(request, "name_en", None) or "").strip()
+    name_ar = (getattr(request, "NameAr", None) or getattr(request, "name_ar", None) or "").strip()
+
+    if not (name_ar or name_en):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="At least one of NameAr or NameEn must be provided for registration.",
         )
 
-    norm_ar = normalize_arabic(request.name_ar) if request.name_ar else ""
-    norm_en = normalize_english(request.name_en) if request.name_en else ""
+    norm_ar = normalize_arabic(name_ar) if name_ar else ""
+    norm_en = normalize_english(name_en) if name_en else ""
 
-    primary_name = request.name_en or request.name_ar or ""
-    primary_name_ar = request.name_ar or request.name_en or ""
+    primary_name = name_en or name_ar
+    primary_name_ar = name_ar or name_en
+    cat_id = request.CategoryId
+    cat_meta = get_category_by_id(cat_id) if cat_id is not None else None
+    if cat_meta is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A valid activity category ID is required for registration.",
+        )
+    req_trade_name_id = getattr(request, "TradeNameId", None) or getattr(request, "trade_name_id", None)
+    req_legal_form = getattr(request, "LegalForm", None) or getattr(request, "legal_form", None)
 
     index_repo = TradeNameIndexRepository(db)
 
-    # 1. Check for Existing Trade Name (Source of truth DB check)
+    # Re-run every deterministic availability, lexicon, and uncertainty check
+    # at the point of registration, not only when the user previously validated.
+    from pipeline.name_composer import compose
+    from pipeline.deterministic_gates import DeterministicGates, SignalType
+
+    composed = compose(
+        name_ar=name_ar,
+        name_en=name_en,
+        operation_type=request.OperationType or "new",
+        is_outside_uaq=False,
+        old_legal_form=None,
+        new_legal_form=req_legal_form,
+        previous_name_ar=None,
+        previous_name_en=None,
+    )
+    gate_signals = await DeterministicGates(
+        index_repo=index_repo,
+        lexicon_repo=LexiconRepository(db),
+    ).run(
+        composed=composed,
+        category_id=cat_id,
+        exclude_trade_name_id=req_trade_name_id,
+    )
+    registration_conflict = next(
+        (signal for signal in gate_signals if signal.signal_type in (SignalType.BLOCKED, SignalType.NEEDS_REVIEW)),
+        None,
+    )
+    if registration_conflict:
+        conflict_entry = registration_conflict.similar_entry
+        conflict_type = registration_conflict.source
+        suggestions: list[SuggestionResponseItem] = []
+        try:
+            generated = await SuggestionEngine(db).generate(
+                name_ar=name_ar,
+                name_en=name_en,
+                activity_category=str(cat_id),
+                category_id=cat_id,
+                legal_form=req_legal_form,
+                request_id="reg-gate-suggestions",
+                channel=channel,
+                limit=6,
+            )
+            suggestions = [
+                SuggestionResponseItem(
+                    name_ar=item.name_ar,
+                    name_en=item.name_en,
+                    score=item.score,
+                    source=item.source,
+                )
+                for item in generated
+            ]
+        except Exception:
+            logger.exception("registration_suggestion_generation_failed")
+
+        conflict_category = conflict_entry.category_id if conflict_entry else cat_id
+        conflict_meta = get_category_by_id(conflict_category)
+        return RegisterTradeNameResponse(
+            success=False,
+            status="rejected",
+            is_existing=conflict_entry is not None,
+            trade_name_id=conflict_entry.trade_name_id if conflict_entry else None,
+            conflict_type=conflict_type,
+            protected_base_name=(
+                extract_base_name(name_en or name_ar).base_name
+                if conflict_type in ("reserved_base_name", "generic_name")
+                else None
+            ),
+            registered_category_id=conflict_category if conflict_entry else None,
+            registered_activity_name_en=conflict_meta["name_en"] if conflict_meta else None,
+            registered_activity_name_ar=conflict_meta["name_ar"] if conflict_meta else None,
+            name_ar=name_ar,
+            name_en=name_en,
+            message_en=registration_conflict.reason_en or "This trade name needs review before registration.",
+            message_ar=registration_conflict.reason_ar or "يجب مراجعة هذا الاسم التجاري قبل التسجيل.",
+            suggestions=suggestions,
+        )
+
+    # 1. Check for Exact Duplicate under the selected activity type (category_id)
+    # Excludes current record if updating (request.trade_name_id)
     exact_matches = await index_repo.lookup_exact(
         normalized_ar=norm_ar,
         normalized_en=norm_en,
+        category_id=cat_id,
+        exclude_trade_name_id=req_trade_name_id,
     )
 
     if exact_matches:
-        # Trade name already exists! Reject and generate suggestions.
-        # Generate brand-preserving, semantically relevant alternatives
+        # Trade name already exists in this activity! Reject and generate verified suggestions.
         suggestions: list[SuggestionResponseItem] = []
         try:
             engine = SuggestionEngine(db)
             generated = await engine.generate(
-                name_ar=request.name_ar or "",
-                name_en=request.name_en or "",
-                activity_category=str(request.category_id or 1),
-                legal_form=request.legal_form,
+                name_ar=name_ar,
+                name_en=name_en,
+                activity_category=str(cat_id),
+                category_id=cat_id,
+                legal_form=req_legal_form,
                 request_id="reg-rej-sug",
                 channel=channel,
                 limit=6,
@@ -907,43 +1318,263 @@ async def register_trade_name(
         except Exception as e:
             logger.exception("suggestion_generation_on_rejection_failed")
 
+        ext_exact_en = extract_base_name(name_en, lang="en")
+        ext_exact_ar = extract_base_name(name_ar, lang="ar")
+        prot_base = ext_exact_en.base_name or ext_exact_ar.base_name
+        cat_meta = get_category_by_id(cat_id)
+        act_name_en = cat_meta["name_en"] if cat_meta else f"Activity {cat_id}"
+        act_name_ar = cat_meta["name_ar"] if cat_meta else f"النشاط {cat_id}"
+
         return RegisterTradeNameResponse(
             success=False,
             status="rejected",
             is_existing=True,
             trade_name_id=exact_matches[0].trade_name_id,
+            conflict_type="exact_duplicate",
+            protected_base_name=prot_base,
+            registered_category_id=cat_id,
+            registered_activity_name_en=act_name_en,
+            registered_activity_name_ar=act_name_ar,
             reference_number=None,
-            name_ar=request.name_ar or "",
-            name_en=request.name_en or "",
-            message_en=f"Trade name '{primary_name}' is already registered in the registry. Duplicate registrations are not permitted.",
-            message_ar=f"الاسم التجاري '{primary_name_ar}' مسجل بالفعل في السجل التجاري ولا يمكن تكراره.",
+            name_ar=name_ar,
+            name_en=name_en,
+            message_en=f"Trade name '{primary_name}' is already registered under this activity type. Duplicate registrations are not permitted.",
+            message_ar=f"الاسم التجاري '{primary_name_ar}' مسجل بالفعل ضمن هذا النشاط التجاري ولا يمكن تكراره.",
             suggestions=suggestions,
         )
 
-    # 2. Name is available -> Proceed to register into database
-    # Concurrency safe: generate new unique trade_name_id
+    # 1b. Check for Protected Base-Name Conflict under the selected activity type (category_id)
+    ext_reg_en = extract_base_name(name_en, lang="en")
+    ext_reg_ar = extract_base_name(name_ar, lang="ar")
+
+    if not ext_reg_en.is_generic or not ext_reg_ar.is_generic:
+        base_conflicts = await index_repo.lookup_base_name_in_category(
+            base_name_en=ext_reg_en.base_name,
+            base_name_ar=ext_reg_ar.base_name,
+            category_id=cat_id,
+            exclude_trade_name_id=req_trade_name_id,
+        )
+        if base_conflicts:
+            conflict_entry = base_conflicts[0]
+            cat_meta = get_category_by_id(cat_id)
+            act_name_en = cat_meta["name_en"] if cat_meta else f"Activity {cat_id}"
+            act_name_ar = cat_meta["name_ar"] if cat_meta else f"النشاط {cat_id}"
+            prot_base = ext_reg_en.base_name or ext_reg_ar.base_name
+
+            suggestions: list[SuggestionResponseItem] = []
+            try:
+                engine = SuggestionEngine(db)
+                generated = await engine.generate(
+                    name_ar=request.name_ar or "",
+                    name_en=request.name_en or "",
+                    activity_category=str(cat_id),
+                    category_id=cat_id,
+                    legal_form=req_legal_form,
+                    request_id="reg-base-sug",
+                    channel=channel,
+                    limit=6,
+                )
+                suggestions = [
+                    SuggestionResponseItem(
+                        name_ar=g.name_ar,
+                        name_en=g.name_en,
+                        score=g.score,
+                        source=g.source,
+                    )
+                    for g in generated
+                ]
+            except Exception:
+                pass
+
+            return RegisterTradeNameResponse(
+                success=False,
+                status="rejected",
+                is_existing=True,
+                conflict_type="reserved_base_name",
+                protected_base_name=prot_base,
+                registered_category_id=cat_id,
+                registered_activity_name_en=act_name_en,
+                registered_activity_name_ar=act_name_ar,
+                trade_name_id=conflict_entry.trade_name_id,
+                reference_number=None,
+                name_ar=request.name_ar or "",
+                name_en=request.name_en or "",
+                message_en=(
+                    f"The base name '{prot_base}' is already registered under {act_name_en} "
+                    f"(Existing: '{conflict_entry.normalized_en or conflict_entry.normalized_ar}'). "
+                    f"Trade names sharing this base name are reserved and cannot be registered under the same activity."
+                ),
+                message_ar=(
+                    f"الاسم الأساسي '{ext_reg_ar.base_name or ext_reg_en.base_name}' مسجل ومحجوز مسبقاً ضمن {act_name_ar}. "
+                    f"لا يمكن تسجيل اسم تجاري يشارك هذا الاسم الأساسي في نفس النشاط."
+                ),
+                suggestions=suggestions,
+            )
+
+    # 2. Check for Confusingly Similar names under the selected activity type
+    similar_matches = await index_repo.find_similar_in_category(
+        normalized_ar=norm_ar,
+        normalized_en=norm_en,
+        category_id=cat_id,
+        exclude_trade_name_id=req_trade_name_id,
+        similarity_threshold=settings.trade_name_similarity_review_threshold,
+    )
+
+    if similar_matches:
+        conflict_entry, conflict_score, _ = similar_matches[0]
+        cat_meta = get_category_by_id(cat_id)
+        act_name_en = cat_meta["name_en"] if cat_meta else f"Activity {cat_id}"
+        act_name_ar = cat_meta["name_ar"] if cat_meta else f"النشاط {cat_id}"
+        ext_sim_en = extract_base_name(request.name_en or "", lang="en")
+        ext_sim_ar = extract_base_name(request.name_ar or "", lang="ar")
+        prot_sim_base = ext_sim_en.base_name or ext_sim_ar.base_name
+
+        suggestions: list[SuggestionResponseItem] = []
+        try:
+            engine = SuggestionEngine(db)
+            generated = await engine.generate(
+                name_ar=request.name_ar or "",
+                name_en=request.name_en or "",
+                activity_category=str(cat_id),
+                category_id=cat_id,
+                legal_form=req_legal_form,
+                request_id="reg-sim-sug",
+                channel=channel,
+                limit=6,
+            )
+            suggestions = [
+                SuggestionResponseItem(
+                    name_ar=g.name_ar,
+                    name_en=g.name_en,
+                    score=g.score,
+                    source=g.source,
+                )
+                for g in generated
+            ]
+        except Exception:
+            pass
+
+        return RegisterTradeNameResponse(
+            success=False,
+            status="rejected",
+            is_existing=True,
+            trade_name_id=conflict_entry.trade_name_id,
+            conflict_type="similar_name",
+            protected_base_name=prot_sim_base,
+            registered_category_id=cat_id,
+            registered_activity_name_en=act_name_en,
+            registered_activity_name_ar=act_name_ar,
+            reference_number=None,
+            name_ar=request.name_ar or "",
+            name_en=request.name_en or "",
+            message_en=(
+                f"Trade name '{primary_name}' is confusingly similar ({int(conflict_score*100)}% match) "
+                f"to existing registered name '{conflict_entry.normalized_en or conflict_entry.normalized_ar}' "
+                f"under this activity type."
+            ),
+            message_ar=(
+                f"الاسم التجاري '{primary_name_ar}' مشابه لدرجة تثير الالتباس "
+                f"مع الاسم المسجل '{conflict_entry.normalized_ar or conflict_entry.normalized_en}' في نفس النشاط."
+            ),
+            suggestions=suggestions,
+        )
+
+    # 3. Available under this activity type -> Proceed to Register or Update
+    phonetic_key = generate_phonetic_key_pair(norm_ar, norm_en)
+    ref_no = request.reference_number or f"REG-{uuid.uuid4().hex[:8].upper()}"
+
+    # Handle update / amendment of an existing record
+    if request.trade_name_id:
+        stmt_existing = select(TradeNameIndex).where(TradeNameIndex.trade_name_id == request.trade_name_id)
+        res_existing = await db.execute(stmt_existing)
+        existing_row = res_existing.scalar_one_or_none()
+        if existing_row:
+            existing_row.normalized_ar = norm_ar
+            existing_row.normalized_en = norm_en
+            existing_row.phonetic_key = phonetic_key
+            existing_row.category_id = cat_id
+            existing_row.base_name_en = canonical_base_name(norm_en, lang="en")
+            existing_row.base_name_ar = canonical_base_name(norm_ar, lang="ar")
+            existing_row.status = "active"
+            try:
+                await db.commit()
+                return RegisterTradeNameResponse(
+                    success=True,
+                    status="updated",
+                    is_existing=False,
+                    trade_name_id=request.trade_name_id,
+                    reference_number=ref_no,
+                    name_ar=request.name_ar or "",
+                    name_en=request.name_en or "",
+                    message_en=f"Trade name '{primary_name}' has been successfully updated.",
+                    message_ar=f"تم تحديث الاسم التجاري '{primary_name_ar}' بنجاح.",
+                    suggestions=[],
+                )
+            except IntegrityError as exc:
+                await db.rollback()
+                conflicts = await index_repo.lookup_base_name_in_category(
+                    base_name_en=extract_base_name(name_en, lang="en").base_name,
+                    base_name_ar=extract_base_name(name_ar, lang="ar").base_name,
+                    category_id=cat_id,
+                    exclude_trade_name_id=request.trade_name_id,
+                )
+                if conflicts:
+                    entry = conflicts[0]
+                    cat_meta = get_category_by_id(entry.category_id)
+                    return RegisterTradeNameResponse(
+                        success=False,
+                        status="rejected",
+                        is_existing=True,
+                        trade_name_id=entry.trade_name_id,
+                        conflict_type="reserved_base_name",
+                        registered_category_id=entry.category_id,
+                        registered_activity_name_en=cat_meta["name_en"] if cat_meta else None,
+                        registered_activity_name_ar=cat_meta["name_ar"] if cat_meta else None,
+                        name_ar=name_ar,
+                        name_en=name_en,
+                        message_en="The base name was reserved by another registration before this update completed.",
+                        message_ar="تم حجز الاسم الأساسي بواسطة تسجيل آخر قبل اكتمال هذا التحديث.",
+                        suggestions=[],
+                    )
+                raise exc
+
+    # Handle new registration
     max_id_stmt = select(func.max(TradeNameIndex.trade_name_id))
     max_id_res = await db.execute(max_id_stmt)
     current_max = max_id_res.scalar() or 100000
     new_trade_name_id = int(current_max) + 1
-
-    phonetic_key = generate_phonetic_key_pair(norm_ar, norm_en)
-    ref_no = request.reference_number or f"REG-{uuid.uuid4().hex[:8].upper()}"
 
     new_index_entry = TradeNameIndex(
         trade_name_id=new_trade_name_id,
         normalized_ar=norm_ar,
         normalized_en=norm_en,
         phonetic_key=phonetic_key,
-        category_id=request.category_id,
+        category_id=cat_id,
+        base_name_en=canonical_base_name(name_en, lang="en"),
+        base_name_ar=canonical_base_name(name_ar, lang="ar"),
         status="active",
     )
     try:
         db.add(new_index_entry)
         await db.commit()
-    except Exception as exc:
+    except IntegrityError as exc:
         await db.rollback()
-        logger.warning("concurrent_duplicate_registration_prevented", extra={"error": str(exc)})
+        exact_after_race = await index_repo.lookup_exact(
+            normalized_ar=norm_ar,
+            normalized_en=norm_en,
+            category_id=cat_id,
+            exclude_trade_name_id=req_trade_name_id,
+        )
+        base_after_race = await index_repo.lookup_base_name_in_category(
+            base_name_en=ext_reg_en.base_name,
+            base_name_ar=ext_reg_ar.base_name,
+            category_id=cat_id,
+            exclude_trade_name_id=req_trade_name_id,
+        )
+        conflict_entry = (base_after_race or exact_after_race or [None])[0]
+        if conflict_entry is None:
+            raise exc
+        logger.info("concurrent_trade_name_reservation_rejected", extra={"trade_name_id": conflict_entry.trade_name_id})
         # Generate alternative suggestions on duplicate rejection
         fallback_sug: list[SuggestionResponseItem] = []
         try:
@@ -951,7 +1582,8 @@ async def register_trade_name(
             generated = await engine.generate(
                 name_ar=request.name_ar or "",
                 name_en=request.name_en or "",
-                activity_category=str(request.category_id or 1),
+                activity_category=str(cat_id),
+                category_id=cat_id,
                 legal_form=request.legal_form,
                 request_id="reg-dup-sug",
                 channel=channel,
@@ -974,11 +1606,16 @@ async def register_trade_name(
             status="rejected",
             is_existing=True,
             trade_name_id=None,
+            conflict_type="reserved_base_name" if base_after_race else "exact_duplicate",
+            protected_base_name=ext_reg_en.base_name or ext_reg_ar.base_name,
+            registered_category_id=conflict_entry.category_id,
+            registered_activity_name_en=cat_meta["name_en"] if cat_meta else None,
+            registered_activity_name_ar=cat_meta["name_ar"] if cat_meta else None,
             reference_number=None,
             name_ar=request.name_ar or "",
             name_en=request.name_en or "",
-            message_en=f"Trade name '{primary_name}' already exists in the registry. Duplicate registration blocked.",
-            message_ar=f"الاسم التجاري '{primary_name_ar}' مسجل مسبقاً في السجل التجاري ولا يمكن تكراره.",
+            message_en=f"Trade name '{primary_name}' already exists in this activity. Duplicate registration blocked.",
+            message_ar=f"الاسم التجاري '{primary_name_ar}' مسجل مسبقاً في هذا النشاط ولا يمكن تكراره.",
             suggestions=fallback_sug,
         )
 
@@ -994,5 +1631,3 @@ async def register_trade_name(
         message_ar=f"تم تسجيل الاسم التجاري '{primary_name_ar}' بنجاح.",
         suggestions=[],
     )
-
-

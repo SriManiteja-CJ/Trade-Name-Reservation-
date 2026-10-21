@@ -290,6 +290,8 @@ async def seed_data():
             logger.info("Seeded active prompt analyzer_v1")
 
         # 2. Seed Trade Name Index
+        from pipeline.base_name_extractor import canonical_base_name
+
         inserted_names = 0
         for item in SAMPLE_TRADE_NAMES:
             stmt_check = select(TradeNameIndex).where(TradeNameIndex.trade_name_id == item["trade_name_id"])
@@ -307,6 +309,8 @@ async def seed_data():
                     normalized_en=norm_en,
                     phonetic_key=phonetic_key,
                     category_id=item["category_id"],
+                    base_name_en=canonical_base_name(norm_en, lang="en"),
+                    base_name_ar=canonical_base_name(norm_ar, lang="ar"),
                     status=item["status"],
                     expiry_date=expiry,
                 )
@@ -318,6 +322,8 @@ async def seed_data():
                 existing.normalized_en = norm_en
                 existing.phonetic_key = phonetic_key
                 existing.category_id = item["category_id"]
+                existing.base_name_en = canonical_base_name(norm_en, lang="en")
+                existing.base_name_ar = canonical_base_name(norm_ar, lang="ar")
                 existing.status = item["status"]
 
         logger.info("Seeded %d new trade names into trade_name_index (total: %d)", inserted_names, len(SAMPLE_TRADE_NAMES))

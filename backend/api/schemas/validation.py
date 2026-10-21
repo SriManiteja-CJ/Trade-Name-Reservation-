@@ -144,6 +144,7 @@ class SuggestionResponseItem(BaseModel):
     name_en: str
     score: float = 1.0
     source: str = "llm"
+    database_verified: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -184,10 +185,15 @@ class ValidateResponse(BaseModel):
     activityFit: Optional[ActivityFitResponse] = None
     suggestions: list[SuggestionResponseItem] = Field(default_factory=list)
 
-    # Direct database existence flag (Requirement 1 & 5)
+    # Direct database existence & conflict flags (Requirements 1, 2, 5)
     is_existing: bool = False
     matched_name_ar: Optional[str] = None
     matched_name_en: Optional[str] = None
+    conflict_type: Optional[str] = None  # exact_duplicate | reserved_base_name | confusingly_similar | generic_name
+    protected_base_name: Optional[str] = None
+    registered_category_id: Optional[int] = None
+    registered_activity_name_en: Optional[str] = None
+    registered_activity_name_ar: Optional[str] = None
 
     model_config = ConfigDict(extra="allow")
 
@@ -195,9 +201,30 @@ class ValidateResponse(BaseModel):
 
 class IsTradeNameExistResponse(BaseModel):
     """Response for GET TradeName/IsTradeNameExist."""
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
     Exists: bool
     MatchedNameAr: Optional[str] = None
     MatchedNameEn: Optional[str] = None
+    ConflictType: Optional[str] = None
+    ProtectedBaseName: Optional[str] = None
+    RegisteredCategoryId: Optional[int] = None
+    RegisteredActivityNameEn: Optional[str] = None
+    RegisteredActivityNameAr: Optional[str] = None
+    AvailabilityStatus: str = "available"
+    NeedsReview: bool = False
+
+    # Lowercase aliases for convenience
+    exists: Optional[bool] = None
+    matched_name_ar: Optional[str] = None
+    matched_name_en: Optional[str] = None
+    conflict_type: Optional[str] = None
+    protected_base_name: Optional[str] = None
+    registered_category_id: Optional[int] = None
+    registered_activity_name_en: Optional[str] = None
+    registered_activity_name_ar: Optional[str] = None
+    availability_status: str = "available"
+    needs_review: bool = False
 
 
 class RegisterTradeNameRequest(BaseModel):
@@ -206,8 +233,9 @@ class RegisterTradeNameRequest(BaseModel):
 
     NameAr: str = Field(..., validation_alias=AliasChoices("NameAr", "TradeNameArabic", "name_ar"))
     NameEn: str = Field(..., validation_alias=AliasChoices("NameEn", "TradeNameEnglish", "name_en"))
-    LegalForm: Optional[str] = Field("LIMITED LIABILITY COMPANY", description="Legal form token")
-    ActivityCategoryId: Optional[int] = Field(4, description="Activity category ID")
+    LegalForm: Optional[str] = Field("LIMITED LIABILITY COMPANY", validation_alias=AliasChoices("LegalForm", "legal_form"), description="Legal form token")
+    ActivityCategoryId: Optional[int] = Field(None, validation_alias=AliasChoices("ActivityCategoryId", "CategoryId", "category_id"), description="Activity category ID")
+    TradeNameId: Optional[int] = Field(None, validation_alias=AliasChoices("TradeNameId", "trade_name_id"), description="Trade name ID to exclude if updating")
     ApplicantId: Optional[str] = Field(None, description="Applicant ID")
     Channel: Optional[str] = Field("online", description="Channel")
 
@@ -223,6 +251,11 @@ class RegisterTradeNameResponse(BaseModel):
     name_ar: Optional[str] = ""
     name_en: Optional[str] = ""
     is_existing: Optional[bool] = False
+    conflict_type: Optional[str] = None
+    protected_base_name: Optional[str] = None
+    registered_category_id: Optional[int] = None
+    registered_activity_name_en: Optional[str] = None
+    registered_activity_name_ar: Optional[str] = None
     message_en: str
     message_ar: str
     suggestions: list[SuggestionResponseItem] = Field(default_factory=list)
@@ -253,9 +286,10 @@ class CheckTransliterationResponse(BaseModel):
 
 
 class TransliterateRequest(BaseModel):
-    """POST TradeName/Transliterate — English to Arabic transliteration and activity translation."""
+    """POST TradeName/Transliterate — Bidirectional English <-> Arabic transliteration and translation."""
     model_config = ConfigDict(populate_by_name=True, extra="allow")
-    NameEn: str = Field(..., validation_alias=AliasChoices("NameEn", "name_en", "english_name", "englishName"))
+    NameEn: Optional[str] = Field(None, validation_alias=AliasChoices("NameEn", "name_en", "english_name", "englishName"))
+    NameAr: Optional[str] = Field(None, validation_alias=AliasChoices("NameAr", "name_ar", "arabic_name", "arabicName"))
 
 
 class TransliterateResponse(BaseModel):
@@ -338,6 +372,7 @@ class RegisterTradeNameRequest(BaseModel):
     NameAr: Optional[str] = Field(None, validation_alias=AliasChoices("NameAr", "name_ar", "TradeNameArabic"))
     NameEn: Optional[str] = Field(None, validation_alias=AliasChoices("NameEn", "name_en", "TradeNameEnglish"))
     CategoryId: Optional[int] = Field(None, validation_alias=AliasChoices("CategoryId", "category_id", "ActivityCategory", "ActivityCategoryId"))
+    TradeNameId: Optional[int] = Field(None, validation_alias=AliasChoices("TradeNameId", "trade_name_id", "TradeNameID"))
     ApplicantName: Optional[str] = Field(None, validation_alias=AliasChoices("ApplicantName", "applicant_name"))
     ReferenceNumber: Optional[str] = Field(None, validation_alias=AliasChoices("ReferenceNumber", "reference_number"))
     OperationType: Optional[str] = Field("new", validation_alias=AliasChoices("OperationType", "operation_type"))
@@ -356,22 +391,13 @@ class RegisterTradeNameRequest(BaseModel):
         return self.CategoryId
 
     @property
+    def trade_name_id(self) -> Optional[int]:
+        return self.TradeNameId
+
+    @property
     def legal_form(self) -> Optional[str]:
         return self.LegalForm
 
     @property
     def reference_number(self) -> Optional[str]:
         return self.ReferenceNumber
-
-
-class RegisterTradeNameResponse(BaseModel):
-    success: bool
-    status: str  # "registered" | "rejected"
-    message_en: str
-    message_ar: str
-    trade_name_id: Optional[int] = None
-    reference_number: Optional[str] = None
-    is_existing: bool = False
-    suggestions: list[SuggestionResponseItem] = Field(default_factory=list)
-
-

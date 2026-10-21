@@ -263,8 +263,26 @@ def build_suggestions_user_message(
     activity_category: Optional[str] = None,
     legal_form: Optional[str] = None,
     num_candidates: int = 25,
+    conflict_brand: Optional[str] = None,
 ) -> str:
     """Build the prompt user message for Stage ⑥ suggestions."""
+    if conflict_brand:
+        return (
+            f"Generate {num_candidates} compliant bilingual trade name suggestions for DED Umm Al Quwain.\n\n"
+            f"BASE PROPOSED NAME:\n<trade_name>{name_ar} / {name_en}</trade_name>\n\n"
+            f"ACTIVITY CATEGORY: {activity_category or 'General Business'}\n"
+            f"LEGAL FORM: {legal_form or 'None specified'}\n\n"
+            f"CRITICAL REGISTRY CONFLICT WARNING:\n"
+            f"The exact brand mark '{conflict_brand}' is ALREADY REGISTERED by an active company in this category.\n"
+            f"Under UAE Commercial Trade Name regulations, any exact repetition of '{conflict_brand}' is blocked.\n\n"
+            "Instructions:\n"
+            f"- Propose creative, close-cousin brand variations that evoke the applicant's original brand identity, theme, and concept without copying the exact blocked term '{conflict_brand}'.\n"
+            f"- For example, if the proposed brand is 'CloudJune', generate closely related, attractive names such as 'CloudNine', 'CloudJini', 'CloudNova', 'CloudSync', 'CloudPulse', 'CloudSphere', 'SkyJune', or 'JuneTech' paired with their business descriptors.\n"
+            "- Retain the applicant's business activity descriptors (e.g. 'Technologies', 'Solutions', 'Systems', 'Digital', 'Cafe', 'Restaurant', 'Consulting').\n"
+            "- NEVER suggest completely unfamiliar, arbitrary, or disconnected names (such as 'Apex', 'Nexus', 'Prime', 'Alpha'). Stay close to the user's concept!\n"
+            "- Ensure all names are phonetically matched between Arabic and English.\n"
+            "- Return a JSON object with a 'suggestions' list of objects matching the schema."
+        )
     return (
         f"Generate {num_candidates} compliant bilingual trade name suggestions for DED Umm Al Quwain.\n\n"
         f"BASE TRADE NAME:\n<trade_name>{name_ar} / {name_en}</trade_name>\n\n"
@@ -276,6 +294,7 @@ def build_suggestions_user_message(
         "- Do NOT return arbitrary or unrelated brand names.\n"
         "- Return ONLY valid JSON matching the schema."
     )
+
 
 
 DEFAULT_TRANSLITERATION_SYSTEM_PROMPT = """You are an Arabic-English phonetic transliteration and orthography specialist for DED Umm Al Quwain.
@@ -292,10 +311,20 @@ DEFAULT_TRANSLITERATE_TO_ARABIC_PROMPT = """You are an official UAE Trade Name R
 Translate/transliterate the English trade name into its official Arabic trade name equivalent.
 
 Guidelines:
-1. Brand names / proper nouns: Transliterate phonetically into standard Arabic preserving brand identity (e.g. Teja -> تيجا, Amazon -> أمازون, Falcon -> فالكون, Oasis -> واحة or أواسيس, Apex -> أبيكس, Star -> ستار).
+1. Brand names / proper nouns: Transliterate phonetically into standard Arabic preserving brand identity (e.g. Teja -> تيجا, Amazon -> أمازون, Falcon -> فالكون, Oasis -> واحة or أواسيس, Apex -> أبيكس, Star -> ستار, Cloudjune -> كلاودجون).
 2. Business activities / commercial descriptors: Translate into legal Arabic terminology with standard prefixes (e.g. Trading -> للتجارة, General Trading -> للتجارة العامة, Technologies -> للتكنولوجيا, Tech -> للتقنية, Software -> للبرمجيات, Solutions -> للحلول, Systems -> للأنظمة, Restaurant -> مطعم, Cafe -> كافيه, Logistics -> للخدمات اللوجستية, Contracting -> للمقاولات, Real Estate -> للعقارات).
 3. Legal form: If present (e.g. LLC -> ذ.م.م).
 4. Return ONLY a valid JSON object matching: {"arabic_name": "...", "confidence": 0.95} with no explanation or markdown wrapper.
+"""
+
+DEFAULT_TRANSLITERATE_TO_ENGLISH_PROMPT = """You are an official UAE Trade Name Registrar and English orthography expert for DED Umm Al Quwain.
+Translate/transliterate the Arabic trade name into its official English trade name equivalent.
+
+Guidelines:
+1. Brand names / proper nouns: Transliterate phonetically into standard Latin/English script preserving brand identity (e.g. تيجا -> Teja, أمازون -> Amazon, فالكون -> Falcon, الصقر -> Al Saqr, الواحة -> Al Waha, واحة -> Oasis, أبيكس -> Apex, ستار -> Star, كلاودجون -> Cloudjune).
+2. Business activities / commercial descriptors: Translate into standard legal English terminology (e.g. للتجارة -> Trading, للتجارة العامة -> General Trading, للتكنولوجيا -> Technologies, للتقنية -> Technology, للبرمجيات -> Software, للحلول -> Solutions, للأنظمة -> Systems, مطعم -> Restaurant, كافيه / مقهى -> Cafe, للخدمات اللوجستية -> Logistics Services, للمقاولات -> Contracting, للعقارات -> Real Estate).
+3. Legal form: If present (e.g. ذ.م.م -> LLC).
+4. Return ONLY a valid JSON object matching: {"english_name": "...", "confidence": 0.95} with no explanation or markdown wrapper.
 """
 
 
@@ -322,10 +351,10 @@ DEFAULT_CATEGORY_SYSTEM_PROMPT = """You are the Lead Business Activity Intellige
 Analyze the user's trade name and entered/selected business activity against the 10 official UAE economic activity categories:
 
 OFFICIAL CATEGORIES:
-1. COMM_001 (Commercial & Trading): General trading, Import/export, Wholesale trade, Retail trade, Foodstuff & Beverage Trading, Cafe and Restaurant Operations
+1. COMM_001 (Commercial & Trading): General trading, Import/export, Wholesale trade, Retail trade, Foodstuff & Beverage Trading, Online retail
 2. SERV_002 (Consulting & Professional Services): Management consultancy, Business consultancy, Professional advisory services, Corporate Services & Auditing
 3. TECH_003 (IT & Technology): Software development, IT consultancy, Technology services, Cloud computing & Data hosting, Artificial Intelligence & Cyber Security
-4. ECOM_004 (E-Commerce): Online retail, Electronic trading, E-Commerce portal operations, Drop-shipping & Online Fulfillment
+4. REST_004 (Restaurants, Cafes & Food Services): Cafe and Restaurant, Restaurant, Cafe, Fast Food Restaurant, Bakery and Sweets, Cafe and Restaurant Operations, Foodstuff Catering & Lounge
 5. MKTG_005 (Digital Marketing & Advertising): Digital marketing, Advertising services, Marketing consultancy, Public Relations & Media Buying
 6. MDIA_006 (Media & Creative): Content creation, Media production, Creative services, Graphic Design & Photography
 7. INDU_007 (Industrial & Manufacturing): Manufacturing, Processing, Production, Assembly

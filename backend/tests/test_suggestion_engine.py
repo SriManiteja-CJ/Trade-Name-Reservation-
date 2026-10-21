@@ -116,6 +116,7 @@ async def test_suggestions_reserved_exclusion(db_session: AsyncSession):
                 name_ar="الرواد",
                 name_en="Al Rowad",
                 limit=10,
+                category_id=1,
             )
 
             # Neither active "AL ROWAD TRADING" nor reserved "AL ROWAD SERVICES" should be in results
@@ -175,6 +176,7 @@ async def test_suggestions_lexicon_screening(db_session: AsyncSession):
                 name_ar="الرواد",
                 name_en="Al Rowad",
                 limit=10,
+                category_id=1,
             )
 
             # The casino candidate must be eliminated by lexicon gate
@@ -205,11 +207,66 @@ async def test_suggestions_legal_form_appended(db_session: AsyncSession):
                 name_en="Al Rowad",
                 legal_form="LLC",
                 limit=5,
+                category_id=1,
+            )
+
+            assert len(res) > 0
+            # Concise LLC / ذ.م.م is offered for companies wanting the legal form suffix
+            has_llc_en = any(item.name_en.endswith("LLC") for item in res)
+            has_llc_ar = any("ذ.م.م" in item.name_ar for item in res)
+            has_clean_en = any(not item.name_en.endswith("LLC") for item in res)
+            assert has_llc_en
+            assert has_llc_ar
+            assert has_clean_en
+            assert not any("LIMITED LIABILITY COMPANY" in item.name_en for item in res)
+    finally:
+        settings.ai_suggestions = original_flag
+
+
+@pytest.mark.asyncio
+async def test_suggestions_brand_conflict_alternative_names(db_session: AsyncSession):
+    """
+    When an applicant submits a trade name whose distinctive brand token is already
+    active/reserved in the registry (e.g., 'Cloudjune' exists), the engine must NOT
+    re-suggest variations containing 'Cloudjune'. Instead, it generates distinct alternative brands.
+    """
+    original_flag = settings.ai_suggestions
+    settings.ai_suggestions = FlagMode.on
+    try:
+        # Pre-seed Cloudjune as an active trade name in category 3
+        index_repo = TradeNameIndexRepository(db_session)
+        await index_repo.upsert(
+            trade_name_id=6099,
+            normalized_ar="كلاودجون للتكنولوجيا",
+            normalized_en="cloudjune technologies",
+            phonetic_key="KLDJN|CLDJN",
+            category_id=3,
+            status="active",
+        )
+
+        engine = SuggestionEngine(session=db_session)
+        with patch("pipeline.suggestion_engine.LlmGateway") as MockGateway:
+            mock_gw = AsyncMock()
+            mock_gw.generate_suggestions.return_value = None
+            mock_gw.close = AsyncMock()
+            MockGateway.return_value = mock_gw
+
+            res = await engine.generate(
+                name_ar="كلاودجون للتكنولوجيا",
+                name_en="Cloudjune Technologies",
+                activity_category="3",
+                category_id=3,
+                legal_form="Limited Liability Company",
+                limit=10,
             )
 
             assert len(res) > 0
             for item in res:
-                assert item.name_en.endswith("LLC")
-                assert "LLC" in item.name_ar or "ذ.م.م" in item.name_ar or "LLC" in item.name_en
+                # Crucial assertion: NONE of the suggestions reuse the taken brand token 'Cloudjune'
+                assert "CLOUDJUNE" not in item.name_en.upper()
+                assert "كلاودجون" not in item.name_ar
+                assert item.source == "alternative"
+                # Never uses verbose LIMITED LIABILITY COMPANY
+                assert "LIMITED LIABILITY COMPANY" not in item.name_en
     finally:
         settings.ai_suggestions = original_flag

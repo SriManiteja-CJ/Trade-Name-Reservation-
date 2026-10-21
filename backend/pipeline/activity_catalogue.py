@@ -21,13 +21,14 @@ OFFICIAL_ACTIVITY_CATALOGUE = [
             "Wholesale trade",
             "Retail trade",
             "Foodstuff & Beverage Trading",
-            "Cafe and Restaurant Operations",
+            "Online retail",
+            "E-Commerce portal operations",
         ],
         "isic_codes": [
             {"code": "46900", "name_en": "Non-specialised wholesale trade", "name_ar": "تجارة الجملة غير المتخصصة"},
             {"code": "46901", "name_en": "General Import and Export", "name_ar": "الاستيراد والتصدير العام"},
             {"code": "47190", "name_en": "Other retail sale in non-specialised stores", "name_ar": "تجارة التجزئة في المتاجر غير المتخصصة"},
-            {"code": "56100", "name_en": "Restaurants and mobile food service activities", "name_ar": "أنشطة المطاعم والمقاهي المتنقلة والثابتة"},
+            {"code": "47910", "name_en": "Retail sale via mail order houses or via Internet", "name_ar": "البيع بالتجزئة عن طريق الإنترنت"},
         ]
     },
     {
@@ -68,19 +69,22 @@ OFFICIAL_ACTIVITY_CATALOGUE = [
     },
     {
         "category_id": 4,
-        "code": "ECOM_004",
-        "name_en": "E-Commerce",
-        "name_ar": "التجارة الإلكترونية",
+        "code": "REST_004",
+        "name_en": "Restaurants, Cafes & Food Services",
+        "name_ar": "المطاعم والمقاهي وخدمات الأغذية",
         "representative_activities": [
-            "Online retail",
-            "Electronic trading",
-            "E-Commerce portal operations",
-            "Drop-shipping & Online Fulfillment",
+            "Cafe and Restaurant",
+            "Restaurant",
+            "Cafe",
+            "Fast Food Restaurant",
+            "Bakery and Sweets",
+            "Cafe and Restaurant Operations",
+            "Foodstuff Catering & Lounge",
         ],
         "isic_codes": [
-            {"code": "47910", "name_en": "Retail sale via mail order houses or via Internet", "name_ar": "البيع بالتجزئة عن طريق الإنترنت"},
-            {"code": "47911", "name_en": "Electronic marketplace & portal trading", "name_ar": "تجارة المنصات الإلكترونية والأسواق الرقمية"},
-            {"code": "63120", "name_en": "Web portals and online marketplace operations", "name_ar": "بوابات الإنترنت وتطبيقات التجارة الإلكترونية"},
+            {"code": "56100", "name_en": "Restaurants and mobile food service activities", "name_ar": "أنشطة المطاعم والمقاهي المتنقلة والثابتة"},
+            {"code": "56300", "name_en": "Beverage serving activities (Cafes & Juice bars)", "name_ar": "أنشطة تقديم المشروبات والمقاهي"},
+            {"code": "10710", "name_en": "Manufacture of bakery products", "name_ar": "صنع منتجات المخابز والحلويات"},
         ]
     },
     {

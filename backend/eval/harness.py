@@ -28,6 +28,7 @@ from config.settings import FlagMode, get_settings
 from index.repository import TradeNameIndexRepository
 from lexicon.repository import LexiconEntry, LexiconRepository
 from pipeline.decision_policy import Outcome, apply_policy
+from pipeline.activity_catalogue import get_category_by_code
 from pipeline.deterministic_gates import DeterministicGates
 from pipeline.name_composer import compose
 from pipeline.normalizer import normalize_arabic, normalize_english
@@ -156,7 +157,11 @@ class EvaluationHarness:
             index_repo=self.index_repo,
             lexicon_repo=self.lexicon_repo,
         )
-        gate_signals = await gates.run(composed=composed)
+        activity = get_category_by_code(case.get("activity_category", ""))
+        gate_signals = await gates.run(
+            composed=composed,
+            category_id=activity["category_id"] if activity else None,
+        )
 
         # 3. Stage ⑤: Decision Policy
         policy_result = apply_policy(

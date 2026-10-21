@@ -149,13 +149,15 @@ class DeterministicGates:
     async def run(
         self,
         composed: ComposedName,
+        category_id: Optional[int] = None,
         exclude_trade_name_id: Optional[int] = None,
     ) -> list[GateSignal]:
         """
-        Run all deterministic gate checks.
+        Run all deterministic gate checks with activity category scoping.
 
         Args:
             composed:               Output from NameComposer (Stage ①+composer)
+            category_id:            Activity category ID for scoped availability & duplicate check
             exclude_trade_name_id:  ID of the record being edited (F2, Ambiguity #7)
 
         Returns:
@@ -165,15 +167,16 @@ class DeterministicGates:
         signals: list[GateSignal] = []
 
         # -----------------------------------------------------------------
-        # F2 — Exact duplicate check
+        # F2 — Exact duplicate check (Scoped to category_id if provided)
         # Always run — even when F12 skip_word_checks=True
-        # (Ambiguity #2 resolution: F2 is not a "word check"; always runs)
         # -----------------------------------------------------------------
         duplicates = await self._index.lookup_exact(
             normalized_ar=composed.normalized_ar,
             normalized_en=composed.normalized_en,
+            category_id=category_id,
             exclude_trade_name_id=exclude_trade_name_id,
         )
+
         for dup in duplicates:
             signals.append(
                 GateSignal(
@@ -189,6 +192,140 @@ class DeterministicGates:
                     similar_entry=dup,
                 )
             )
+
+        # -----------------------------------------------------------------
+        # Base-Name Extraction, Generic Name Check & Activity Reservation
+        # Enforces base-name uniqueness within category_id (Requirements 1 & 2)
+        # -----------------------------------------------------------------
+        from pipeline.base_name_extractor import extract_base_name
+        ext_en = extract_base_name(composed.normalized_en, lang="en")
+        ext_ar = extract_base_name(composed.normalized_ar, lang="ar")
+
+        from config.settings import get_settings
+
+        extraction_results = []
+        if composed.normalized_en:
+            extraction_results.append(ext_en)
+        if composed.normalized_ar:
+            extraction_results.append(ext_ar)
+
+        if (
+            not duplicates
+            and (
+                category_id is None
+                or not extraction_results
+                or all(
+                    result.is_generic
+                    or result.confidence < get_settings().trade_name_base_min_confidence
+                    for result in extraction_results
+                )
+            )
+        ):
+            signals.append(
+                GateSignal(
+                    signal_type=SignalType.NEEDS_REVIEW,
+                    source="generic_name" if all(r.is_generic for r in extraction_results) else "base_name_uncertain",
+                    category="generic_name",
+                    severity="review",
+                    reason_en=(
+                        "A valid activity category is required for availability checks."
+                        if category_id is None
+                        else "The distinctive base name could not be identified reliably; this name requires manual review."
+                    ),
+                    reason_ar=(
+                        "يلزم تحديد فئة نشاط صحيحة للتحقق من توفر الاسم."
+                        if category_id is None
+                        else "تعذر تحديد الاسم الأساسي المميز بدرجة موثوقة؛ يتطلب الاسم مراجعة يدوية."
+                    ),
+                    fix_en="Select an activity and provide a clearly distinctive base name.",
+                    fix_ar="يرجى تحديد النشاط وإدخال اسم أساسي مميز بوضوح.",
+                )
+            )
+
+        # Protected Base-Name Check under the selected activity type
+        if category_id is not None and not any(s.source == "exact_duplicate" for s in signals):
+            base_conflicts = await self._index.lookup_base_name_in_category(
+                base_name_en=ext_en.base_name,
+                base_name_ar=ext_ar.base_name,
+                category_id=category_id,
+                exclude_trade_name_id=exclude_trade_name_id,
+            )
+            for conflict_entry in base_conflicts:
+                prot_base = ext_en.base_name or ext_ar.base_name
+                signals.append(
+                    GateSignal(
+                        signal_type=SignalType.BLOCKED,
+                        source="reserved_base_name",
+                        category="reserved_base_name",
+                        severity="block",
+                        matched_term=f"ID:{conflict_entry.trade_name_id}",
+                        reason_en=(
+                            f"The base name '{prot_base}' is already registered under this business activity "
+                            f"(Registration: '{conflict_entry.normalized_en or conflict_entry.normalized_ar}'). "
+                            f"Trade names sharing this base name are reserved and cannot be registered under the same activity."
+                        ),
+                        reason_ar=(
+                            f"الاسم الأساسي '{ext_ar.base_name or ext_en.base_name}' مسجل ومحجوز مسبقاً ضمن هذا النشاط التجاري "
+                            f"(السجل: '{conflict_entry.normalized_ar or conflict_entry.normalized_en}'). "
+                            f"لا يمكن تكرار استخدام نفس الاسم الأساسي تحت نفس النشاط."
+                        ),
+                        fix_en="Please explore similar trade names with a different base name.",
+                        fix_ar="يرجى استكشاف أسماء تجارية بديلة ذات اسم أساسي مختلف.",
+                        similar_entry=conflict_entry,
+                    )
+                )
+
+        # -----------------------------------------------------------------
+        # Confusing Similarity Prevention under the same activity type
+        # Identifies minor spelling variations, punctuation, and typos
+        # -----------------------------------------------------------------
+        if category_id is not None and not any(s.source in ("exact_duplicate", "reserved_base_name") for s in signals):
+            similar_matches = await self._index.find_similar_in_category(
+                normalized_ar=composed.normalized_ar,
+                normalized_en=composed.normalized_en,
+                category_id=category_id,
+                exclude_trade_name_id=exclude_trade_name_id,
+                similarity_threshold=get_settings().trade_name_similarity_review_threshold,
+            )
+            for sim_entry, sim_score, match_type in similar_matches[:3]:
+                if sim_score >= 0.99 or match_type == "exact_duplicate":
+                    signals.append(
+                        GateSignal(
+                            signal_type=SignalType.BLOCKED,
+                            source="exact_duplicate",
+                            category=None,
+                            severity="block",
+                            matched_term=f"ID:{sim_entry.trade_name_id}",
+                            reason_en=_REASON_EXACT_DUP_EN,
+                            reason_ar=_REASON_EXACT_DUP_AR,
+                            fix_en=_FIX_EXACT_DUP_EN,
+                            fix_ar=_FIX_EXACT_DUP_AR,
+                            similar_entry=sim_entry,
+                        )
+                    )
+                else:
+                    signals.append(
+                        GateSignal(
+                            signal_type=SignalType.NEEDS_REVIEW,
+                            source="similar_name",
+                            category="similar_name",
+                            severity="review",
+                            matched_term=f"ID:{sim_entry.trade_name_id}",
+                            reason_en=(
+                                f"This trade name is confusingly similar ({int(sim_score * 100)}% match) "
+                                f"to active registered trade name '{sim_entry.normalized_en or sim_entry.normalized_ar}' "
+                                f"under the selected activity type."
+                            ),
+                            reason_ar=(
+                                f"هذا الاسم التجاري مشابه لدرجة تثير الالتباس (نسبة تطابق {int(sim_score * 100)}%) "
+                                f"مع الاسم التجاري النشط '{sim_entry.normalized_ar or sim_entry.normalized_en}' "
+                                f"ضمن نفس فئة النشاط."
+                            ),
+                            fix_en="Modify the proposed name spelling or add distinctive terms to prevent confusion.",
+                            fix_ar="يرجى تعديل الصياغة أو إضافة كلمات مميزة لتجنب الالتباس مع الأسماء المسجلة.",
+                            similar_entry=sim_entry,
+                        )
+                    )
 
         # -----------------------------------------------------------------
         # F4 — Lexicon word checks

@@ -42,6 +42,7 @@ async def test_validate_clean_name_ok(client: AsyncClient, db_session: AsyncSess
             "RequestId": "REQ-001",
             "OperationType": "new",
             "LegalForm": "LLC",
+            "ActivityCategoryId": 3,
         }
         resp = await client.post("/TradeName/ValidateWithSuggestion", json=payload)
         assert resp.status_code == 200
@@ -131,24 +132,25 @@ async def test_is_trade_name_exist_endpoint(client: AsyncClient, db_session: Asy
         normalized_en="al wafa company",
         phonetic_key="WF|WF",
         status="active",
+        category_id=1,
     )
     await db_session.commit()
 
     # Matches existing active name
-    resp = await client.get("/TradeName/IsTradeNameExist", params={"NameAr": "شركة الوفاء"})
+    resp = await client.get("/TradeName/IsTradeNameExist", params={"NameAr": "شركة الوفاء", "CategoryId": 1})
     assert resp.status_code == 200
     assert resp.json()["Exists"] is True
 
     # Exclude self by TradeNameId
     resp_excluded = await client.get(
         "/TradeName/IsTradeNameExist",
-        params={"NameAr": "شركة الوفاء", "TradeNameId": 2001},
+        params={"NameAr": "شركة الوفاء", "TradeNameId": 2001, "CategoryId": 1},
     )
     assert resp_excluded.status_code == 200
     assert resp_excluded.json()["Exists"] is False
 
     # Does not match non-existing name
-    resp_none = await client.get("/TradeName/IsTradeNameExist", params={"NameEn": "Non Existing Name"})
+    resp_none = await client.get("/TradeName/IsTradeNameExist", params={"NameEn": "Non Existing Name", "CategoryId": 1})
     assert resp_none.status_code == 200
     assert resp_none.json()["Exists"] is False
 
@@ -251,6 +253,5 @@ async def test_register_trade_name_duplicate_rejected(client: AsyncClient, db_se
     assert data["status"] == "rejected"
     assert data["is_existing"] is True
     assert len(data["suggestions"]) > 0
-    # Suggestions must preserve the brand token "Teja"
-    assert any("teja" in s["name_en"].lower() for s in data["suggestions"])
-
+    # Suggestions must not repeat the conflicting existing brand token
+    assert not any("teja" in s["name_en"].lower() for s in data["suggestions"])

@@ -84,6 +84,21 @@ def _mock_session():
     return session
 
 
+def _mock_audit_session_factory():
+    """Create an isolated session factory for audit writes."""
+    audit_session = AsyncMock()
+    audit_session.add = MagicMock()
+    audit_session.flush = AsyncMock()
+    audit_session.commit = AsyncMock()
+
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=audit_session)
+    context.__aexit__ = AsyncMock(return_value=False)
+
+    factory = MagicMock(return_value=context)
+    return factory, audit_session
+
+
 # ---------------------------------------------------------------------------
 # Circuit Breaker unit tests
 # ---------------------------------------------------------------------------
@@ -194,12 +209,15 @@ class TestGatewaySuccessPath:
     async def test_audit_written_on_success(self):
         session = _mock_session()
         gateway = LlmGateway(session=session, redis_client=None)
+        audit_factory, audit_session = _mock_audit_session_factory()
 
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = VALID_VLLM_RESPONSE
 
-        with patch.object(gateway._http_client, "post", new=AsyncMock(return_value=mock_response)):
+        with patch("db.session.AsyncSessionLocal", audit_factory), patch.object(
+            gateway._http_client, "post", new=AsyncMock(return_value=mock_response)
+        ):
             await gateway.analyze(
                 request_id="REQ-002",
                 channel="online",
@@ -211,9 +229,10 @@ class TestGatewaySuccessPath:
                 prompt_version_label="v1",
             )
 
-        # session.add() should have been called once (for audit)
-        assert session.add.called
-        assert session.flush.called
+        audit_factory.assert_called_once()
+        audit_session.add.assert_called_once()
+        audit_session.flush.assert_awaited_once()
+        audit_session.commit.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -275,8 +294,9 @@ class TestGatewayFailurePaths:
         """Audit must be written even when LLM fails (N3)."""
         session = _mock_session()
         gateway = LlmGateway(session=session, redis_client=None)
+        audit_factory, audit_session = _mock_audit_session_factory()
 
-        with patch.object(
+        with patch("db.session.AsyncSessionLocal", audit_factory), patch.object(
             gateway._http_client, "post",
             new=AsyncMock(side_effect=httpx.TimeoutException("timeout"))
         ):
@@ -291,8 +311,10 @@ class TestGatewayFailurePaths:
                 prompt_version_label="v1",
             )
 
-        # Audit write attempted even on failure
-        assert session.add.called
+        audit_factory.assert_called_once()
+        audit_session.add.assert_called_once()
+        audit_session.flush.assert_awaited_once()
+        audit_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_circuit_open_returns_none_immediately(self):

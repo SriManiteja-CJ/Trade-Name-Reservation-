@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import AiEngineConfigModal from './AiEngineConfigModal';
 import { API_BASE } from '../config';
 
-export default function FigmaHeader({ lang, setLang, activeNav, onOpenSettings }) {
+export default function AppHeader({ lang, setLang, activeNav, onOpenSettings }) {
   const isAr = lang === 'ar';
   const isPortalUser = activeNav === 'portal';
   const [isConfigOpen, setIsConfigOpen] = useState(false);
