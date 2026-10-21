@@ -1,3 +1,4 @@
+
 """
 pipeline/suggestion_engine.py
 Stage ⑥ Suggestion Engine for the Trade Name Intelligence Service.
@@ -34,18 +35,6 @@ from pipeline.normalizer import normalize_arabic, normalize_english, strip_token
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
-
-# ---------------------------------------------------------------------------
-# Template Fallback Library (Ambiguity #5, F9 complementary patterns)
-# ---------------------------------------------------------------------------
-CATEGORY_NAME_MAP: dict[str, str] = {
-    "1": "Commercial & General Trading",
-    "2": "Professional Services & Consultancy",
-    "3": "Information Technology & Software",
-    "4": "Restaurant, Cafe & Dining Services",
-    "5": "Real Estate & Property Management",
-    "6": "Construction & Contracting",
-}
 
 def extract_core_brand_token(name: str, lang: str = "en") -> str:
     """
@@ -252,116 +241,107 @@ def is_candidate_relevant(
     return False
 
 
-CATEGORY_TEMPLATES: dict[str, list[tuple[str, str]]] = {
-    "4": [
-        ("بسترو وكافيه", "BISTRO AND CAFE"),
-        ("كافيه هاوس", "CAFE HOUSE"),
-        ("بسترو", "BISTRO"),
-        ("فود وكافيه", "FOOD & CAFE"),
-        ("كيتشن ولاونج", "KITCHEN & LOUNGE"),
-        ("لاونج ومطعم", "LOUNGE & RESTAURANT"),
-        ("داينينغ وبسترو", "DINING & BISTRO"),
-        ("جورميه كافيه", "GOURMET CAFE"),
-        ("بايتس وكافيه", "BITES & CAFE"),
-        ("اكسبريس كافيه", "EXPRESS CAFE"),
-    ],
-    "restaurant": [
-        ("بسترو وكافيه", "BISTRO AND CAFE"),
-        ("كافيه هاوس", "CAFE HOUSE"),
-        ("بسترو", "BISTRO"),
-        ("فود وكافيه", "FOOD & CAFE"),
-        ("كيتشن ولاونج", "KITCHEN & LOUNGE"),
-        ("لاونج ومطعم", "LOUNGE & RESTAURANT"),
-        ("داينينغ وبسترو", "DINING & BISTRO"),
-        ("جورميه كافيه", "GOURMET CAFE"),
-        ("بايتس وكافيه", "BITES & CAFE"),
-        ("اكسبريس كافيه", "EXPRESS CAFE"),
-    ],
-    "3": [
-        ("للحلول البرمجية", "SOFTWARE SOLUTIONS"),
-        ("للتقنيات الذكية", "SMART TECHNOLOGIES"),
-        ("للأنظمة والبرمجيات", "SYSTEMS & SOFTWARE"),
-        ("للأمن السيبراني", "CYBER SOLUTIONS"),
-        ("للابتكار الرقمي", "DIGITAL INNOVATION"),
-        ("للتكنولوجيا", "TECH SOLUTIONS"),
-        ("ديجيتال لابز", "DIGITAL LABS"),
-    ],
-    "1": [
-        ("للتجارة العامة", "GENERAL TRADING"),
-        ("للتجارة والتوزيع", "TRADING & DISTRIBUTION"),
-        ("للاستيراد والتصدير", "IMPORT & EXPORT"),
-        ("للمشاريع التجارية", "COMMERCIAL VENTURES"),
-        ("جلوبال للتجارة", "GLOBAL TRADING"),
-    ],
-}
+def generate_dynamic_phonetic_variants(
+    base_name_en: str,
+    descriptors_en: str,
+    base_name_ar: str,
+    descriptors_ar: str,
+    brand_conflict: bool = False,
+) -> list[tuple[str, str, str]]:
+    """
+    Generates close-cousin brand alternatives preserving the applicant's core identity and concept.
+    e.g. 'CloudJune Technologies' -> 'CloudNine Technologies', 'CloudJini Technologies', 'CloudNova Technologies'
+         'Teja Cafe' -> 'TejaNova Cafe', 'TejaCraft Cafe', 'TejaCore Cafe'
+    """
+    variants: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
 
-DEFAULT_TEMPLATES: list[tuple[str, str]] = [
-    ("للتجارة العامة", "GENERAL TRADING"),
-    ("للخدمات والاستشارات", "SERVICES & CONSULTING"),
-    ("للمشاريع المتكاملة", "INTEGRATED ENTERPRISES"),
-    ("الدولية للحلول", "INTERNATIONAL SOLUTIONS"),
-    ("الخليجية للأعمال", "GULF BUSINESS"),
-    ("العالمية التجارية", "GLOBAL COMMERCIAL"),
-]
+    b_en = (base_name_en or "").strip().title()
+    desc_en = (descriptors_en or "").strip().title()
+    desc_ar = (descriptors_ar or "").strip()
 
-# Distinct alternative brand names when the applicant's brand collides with existing registry records
-CATEGORY_ALTERNATIVE_TEMPLATES: dict[str, list[tuple[str, str]]] = {
-    "3": [
-        ("أورا للحلول التقنية", "AURA TECH SOLUTIONS"),
-        ("ستراتو للأنظمة والبرمجيات", "STRATO SYSTEMS & SOFTWARE"),
-        ("نيكساسبيس للتقنيات الذكية", "NEXASPACE SMART TECHNOLOGIES"),
-        ("سكاي فيرتكس للحلول الرقمية", "SKYVERTEX DIGITAL SOLUTIONS"),
-        ("سينرجيتك للبرمجيات", "SYNERGITECH SOFTWARE"),
-        ("فانتج بوينت للتقنية", "VANTAGEPOINT TECH"),
-        ("نوفا كود لتكنولوجيا المعلومات", "NOVACODE IT SOLUTIONS"),
-        ("ألتوس للأنظمة السحابية", "ALTUS CLOUD SYSTEMS"),
-        ("زينيث للابتكار الرقمي", "ZENITH DIGITAL INNOVATION"),
-        ("بلوستراتوس لتقنية المعلومات", "BLUESTRATUS IT SERVICES"),
-    ],
-    "4": [
-        ("مقهى وبسترو الساحة", "AL SAHA CAFE & BISTRO"),
-        ("بريز كافيه ومطعم", "BREEZE CAFE & DINING"),
-        ("سينامون لاونج وكافيه", "CINNAMON LOUNGE & CAFE"),
-        ("أمبر جورميه كافيه", "AMBER GOURMET CAFE"),
-        ("أورورا بسترو وكافيه", "AURORA BISTRO & CAFE"),
-        ("واحة النخيل كافيه", "OASIS PALM CAFE"),
-        ("أوريجان لاونج وكافيه", "ORIGIN LOUNGE & CAFE"),
-        ("ميدتاون كافيه هاوس", "MIDTOWN CAFE HOUSE"),
-        ("إيليت بايتس وكافيه", "ELITE BITES & CAFE"),
-        ("كراون كافيه ومخبز", "CROWN CAFE & BAKERY"),
-    ],
-    "1": [
-        ("المدار للتجارة العامة", "AL MADAR GENERAL TRADING"),
-        ("أفق الشرق للتجارة", "EAST HORIZON TRADING"),
-        ("القِمّة العالمية للتجارة", "GLOBAL APEX TRADING"),
-        ("ميدوي للتجارة العامة", "MIDWAY GENERAL TRADING"),
-        ("فنتشر للتجارة والتوزيع", "VENTURE TRADING & DISTRIBUTION"),
-        ("الأفق الذهبي للتجارة", "GOLDEN HORIZON TRADING"),
-        ("نكسوس للتجارة العامة", "NEXUS GENERAL TRADING"),
-        ("برايم كراون للتجارة", "PRIME CROWN TRADING"),
-    ],
-    "2": [
-        ("أكسيس للاستشارات الإدارية", "AXIS MANAGEMENT CONSULTING"),
-        ("بيكون للاستشارات والحلول", "BEACON CONSULTANCY & SOLUTIONS"),
-        ("كريست للاستشارات المهنية", "CREST PROFESSIONAL CONSULTANCY"),
-        ("إنسايت للاستشارات", "INSIGHT CONSULTING"),
-        ("تريومف للاستشارات المؤسسية", "TRIUMPH CORPORATE ADVISORY"),
-        ("بريزم للاستشارات وتطوير الأعمال", "PRISM BUSINESS ADVISORY"),
-    ],
-}
+    if not b_en and base_name_ar:
+        b_en = transliterate_ar_to_en_token(base_name_ar)
 
-DEFAULT_ALTERNATIVE_TEMPLATES: list[tuple[str, str]] = [
-    ("الأفق المتميز", "HORIZON APEX"),
-    ("رؤية المستقبل للخدمات", "FUTURE VISION SERVICES"),
-    ("نبراس الخليج", "NIBRAS GULF"),
-    ("طليعة الريادة", "VANGUARD ENTERPRISES"),
-    ("النخبة المتكاملة", "ELITE INTEGRATED"),
-    ("سماء الإبداع", "CREATIVE SKYLINE"),
-    ("الشهاب للخدمات", "AL SHEHAB SERVICES"),
-    ("أركان الأصالة", "ARKAN AL ASALA"),
-    ("الوسام الماسي", "DIAMOND BADGE"),
-    ("رواد المستقبل", "FUTURE PIONEERS"),
-]
+    if not b_en:
+        return []
+
+    b_low = b_en.lower()
+
+    # Detect common distinctive compound prefixes (e.g. Cloud in CloudJune, Cyber in CyberTech)
+    KNOWN_PREFIXES = [
+        ("cloud", "Cloud", "كلاود"),
+        ("cyber", "Cyber", "سايبر"),
+        ("data", "Data", "داتا"),
+        ("tech", "Tech", "تك"),
+        ("smart", "Smart", "سمارت"),
+        ("star", "Star", "ستار"),
+        ("sun", "Sun", "صن"),
+        ("sky", "Sky", "سكاي"),
+        ("blue", "Blue", "بلو"),
+        ("meta", "Meta", "ميتا"),
+        ("omni", "Omni", "أومني"),
+        ("alpha", "Alpha", "ألفا"),
+    ]
+
+    matched_p_en = None
+    matched_p_ar = None
+    for p_low, p_en, p_ar in KNOWN_PREFIXES:
+        if b_low.startswith(p_low) and len(b_low) > len(p_low):
+            matched_p_en = p_en
+            matched_p_ar = p_ar
+            break
+
+    # Close-cousin companions
+    CLOSE_COMPANIONS = [
+        ("ناين", "Nine"),
+        ("جيني", "Jini"),
+        ("نوفا", "Nova"),
+        ("سينك", "Sync"),
+        ("بلس", "Pulse"),
+        ("سفير", "Sphere"),
+        ("ويف", "Wave"),
+        ("كرافت", "Craft"),
+        ("بيك", "Peak"),
+        ("كور", "Core"),
+        ("لينك", "Link"),
+        ("فايب", "Vibe"),
+        ("فيستا", "Vista"),
+    ]
+
+    if brand_conflict:
+        for tail_ar, tail_en in CLOSE_COMPANIONS:
+            cand_en = f"{tail_en} {desc_en}".strip()
+            cand_ar = f"{tail_ar} {desc_ar}".strip()
+            if cand_en.lower() not in seen:
+                seen.add(cand_en.lower())
+                variants.append((cand_ar, cand_en, "alternative"))
+        return variants
+
+    if matched_p_en and matched_p_ar:
+        # e.g. CloudNine, CloudJini, CloudNova, CloudSync, CloudSphere...
+        for tail_ar, tail_en in CLOSE_COMPANIONS:
+            cand_base_en = f"{matched_p_en}{tail_en}"
+            cand_base_ar = f"{matched_p_ar} {tail_ar}"
+            cand_en = f"{cand_base_en} {desc_en}".strip() if desc_en else cand_base_en
+            cand_ar = f"{cand_base_ar} {desc_ar}".strip() if desc_ar else cand_base_ar
+            if cand_en.lower() not in seen and cand_en.lower() != b_low:
+                seen.add(cand_en.lower())
+                variants.append((cand_ar, cand_en, "template"))
+    else:
+        # Single-token base names (e.g. Teja -> TejaNova, TejaCraft, TejaCore)
+        base_ar = base_name_ar or transliterate_en_to_ar_token(b_en)
+        for tail_ar, tail_en in CLOSE_COMPANIONS:
+            cand_base_en = f"{b_en}{tail_en}"
+            cand_base_ar = f"{base_ar} {tail_ar}".strip()
+            cand_en = f"{cand_base_en} {desc_en}".strip() if desc_en else cand_base_en
+            cand_ar = f"{cand_base_ar} {desc_ar}".strip() if desc_ar else cand_base_ar
+            if cand_en.lower() not in seen:
+                seen.add(cand_en.lower())
+                variants.append((cand_ar, cand_en, "template"))
+
+    return variants
+
 
 
 
@@ -435,41 +415,44 @@ class SuggestionEngine:
         if target_category_id is None and activity_category:
             if str(activity_category).isdigit():
                 target_category_id = int(activity_category)
+        if target_category_id is None:
+            return []
 
-        # Extract core name components
-        parsed_ar = strip_tokens(normalize_arabic(name_ar), lang="ar")
-        parsed_en = strip_tokens(normalize_english(name_en), lang="en")
-        core_ar = parsed_ar.core_name or name_ar
-        core_en = parsed_en.core_name or name_en
+        # Extract core name components dynamically using DynamicBaseNameExtractor
+        from pipeline.activity_catalogue import get_category_by_id
+        from pipeline.base_name_extractor import canonical_base_name, extract_base_name
 
-        brand_en = (extract_core_brand_token(core_en, "en") or core_en).title()
-        brand_ar = extract_core_brand_token(core_ar, "ar") or core_ar
+        ext_en = extract_base_name(name_en, lang="en")
+        ext_ar = extract_base_name(name_ar, lang="ar")
 
-        # Reconcile brand tokens across languages (Requirement 6 & 7)
+        brand_en = (ext_en.base_name or name_en).title()
+        desc_en = ext_en.descriptors.title()
+        brand_ar = ext_ar.base_name or name_ar
+        desc_ar = ext_ar.descriptors
+
+        # Reconcile brand tokens across languages
         if not brand_ar and brand_en:
             brand_ar = transliterate_en_to_ar_token(brand_en)
         elif not brand_en and brand_ar:
             brand_en = transliterate_ar_to_en_token(brand_ar)
         elif brand_en and brand_ar:
-            # Check for cross-language mismatch (e.g. user typed 'teja cafe' with stale 'مطعم صحراء')
             expected_ar = transliterate_en_to_ar_token(brand_en)
             try:
                 from rapidfuzz import fuzz
                 if expected_ar and fuzz.ratio(expected_ar, brand_ar) < 40:
-                    # Stale or conflicting Arabic brand provided: realign to match English primary brand
                     brand_ar = expected_ar
             except Exception:
                 pass
 
-        core_en = brand_en or core_en
-        core_ar = brand_ar or core_ar
+        core_en = brand_en
+        core_ar = brand_ar
 
         candidates: list[tuple[str, str, str]] = []  # (ar, en, source)
-        cat_key = str(activity_category).lower().strip() if activity_category else ""
-        resolved_category = CATEGORY_NAME_MAP.get(cat_key, activity_category or "General Business")
+        cat_meta = get_category_by_id(target_category_id) if target_category_id else None
+        resolved_category = cat_meta["name_en"] if cat_meta else (activity_category or "General Business")
 
         # -------------------------------------------------------------
-        # Step 0: Check if Core Brand Token Collides with Active Registry
+        # Step 0: Check if Base Name Collides with Active Registry (Scoped to Category)
         # -------------------------------------------------------------
         from db.models import TradeNameIndex
         brand_conflict = False
@@ -497,8 +480,7 @@ class SuggestionEngine:
                 TradeNameIndex.status.in_(["active", "reserved"]),
                 or_(*conditions)
             )
-            if target_category_id is not None:
-                stmt_brand = stmt_brand.where(TradeNameIndex.category_id == target_category_id)
+            stmt_brand = stmt_brand.where(TradeNameIndex.category_id == target_category_id)
 
             res_brand = await self.session.execute(stmt_brand)
             matched_brands = res_brand.scalars().all()
@@ -521,7 +503,7 @@ class SuggestionEngine:
                 name_en=core_en,
                 activity_category=resolved_category,
                 legal_form=legal_form,
-                num_candidates=25,
+                num_candidates=10,
                 conflict_brand=brand_en if brand_conflict else None,
             )
             await gateway.close()
@@ -529,41 +511,25 @@ class SuggestionEngine:
             if batch and batch.suggestions:
                 for s in batch.suggestions:
                     if s.name_ar and s.name_en:
-                        # Enforce strict candidate relevance or anti-conflict filter
                         if is_candidate_relevant(s.name_en, s.name_ar, brand_en, brand_ar, brand_conflict=brand_conflict):
                             candidates.append((s.name_ar.strip(), s.name_en.strip(), "alternative" if brand_conflict else "llm"))
         except Exception as exc:
             logger.warning("suggestion_llm_failed_fallback", extra={"error": str(exc)})
 
         # -------------------------------------------------------------
-        # Step 2: Category-Tailored Template Fallback (Ambiguity #5) if LLM produced few
+        # Step 2: Dynamic Algorithmic Variant Generation (Zero Hardcoded Lists)
         # -------------------------------------------------------------
         if len(candidates) < 10:
-            if brand_conflict:
-                templates_to_use = (
-                    CATEGORY_ALTERNATIVE_TEMPLATES.get(cat_key)
-                    or (CATEGORY_ALTERNATIVE_TEMPLATES.get("4") if any(k in cat_key for k in ("rest", "food", "cafe", "4")) else None)
-                    or (CATEGORY_ALTERNATIVE_TEMPLATES.get("3") if any(k in cat_key for k in ("tech", "soft", "3")) else None)
-                    or (CATEGORY_ALTERNATIVE_TEMPLATES.get("1") if any(k in cat_key for k in ("trade", "comm", "1")) else None)
-                    or (CATEGORY_ALTERNATIVE_TEMPLATES.get("2") if any(k in cat_key for k in ("cons", "prof", "2")) else None)
-                    or DEFAULT_ALTERNATIVE_TEMPLATES
-                )
-                for tmpl_ar, tmpl_en in templates_to_use:
-                    if is_candidate_relevant(tmpl_en, tmpl_ar, brand_en, brand_ar, brand_conflict=True):
-                        candidates.append((tmpl_ar, tmpl_en.title(), "alternative"))
-            elif brand_en or brand_ar:
-                templates_to_use = (
-                    CATEGORY_TEMPLATES.get(cat_key)
-                    or (CATEGORY_TEMPLATES.get("4") if any(k in cat_key for k in ("rest", "food", "cafe", "4")) else None)
-                    or (CATEGORY_TEMPLATES.get("3") if any(k in cat_key for k in ("tech", "soft", "3")) else None)
-                    or (CATEGORY_TEMPLATES.get("1") if any(k in cat_key for k in ("trade", "comm", "1")) else None)
-                    or DEFAULT_TEMPLATES
-                )
-                for tmpl_ar, tmpl_en in templates_to_use:
-                    cand_ar = f"{brand_ar} {tmpl_ar}".strip()
-                    cand_en = f"{brand_en} {tmpl_en.title()}".strip()
-                    if is_candidate_relevant(cand_en, cand_ar, brand_en, brand_ar, brand_conflict=False):
-                        candidates.append((cand_ar, cand_en, "template"))
+            dyn_variants = generate_dynamic_phonetic_variants(
+                base_name_en=brand_en,
+                descriptors_en=desc_en,
+                base_name_ar=brand_ar,
+                descriptors_ar=desc_ar,
+                brand_conflict=brand_conflict,
+            )
+            for var_ar, var_en, src in dyn_variants:
+                if is_candidate_relevant(var_en, var_ar, brand_en, brand_ar, brand_conflict=brand_conflict):
+                    candidates.append((var_ar, var_en, "alternative" if brand_conflict else "template"))
 
         if not candidates:
             return []
@@ -616,7 +582,10 @@ class SuggestionEngine:
         # Verified against database records and similarity rules (Requirement 4 & 5)
         # -------------------------------------------------------------
         from db.models import TradeNameIndex
+        from index.repository import TradeNameIndexRepository
         from rapidfuzz import fuzz
+        index_repo = TradeNameIndexRepository(self.session)
+        base_similarity_threshold = settings.trade_name_base_similarity_threshold
         import re
 
         def _clean_canon(s: str) -> str:
@@ -629,14 +598,18 @@ class SuggestionEngine:
         norm_ar_list = [c["norm_ar"] for c in clean_candidates]
         norm_en_list = [c["norm_en"] for c in clean_candidates]
 
-        # F18 — Reserved & active names are never suggested (single set query across entire registry)
-        stmt = select(TradeNameIndex.normalized_ar, TradeNameIndex.normalized_en).where(
+        # F18 — Reserved & active names are never suggested (scoped to category_id)
+        stmt_conds = [
             TradeNameIndex.status.in_(["active", "reserved"]),
             or_(
                 TradeNameIndex.normalized_ar.in_(norm_ar_list),
                 TradeNameIndex.normalized_en.in_(norm_en_list),
             ),
-        )
+        ]
+        if target_category_id is not None:
+            stmt_conds.append(TradeNameIndex.category_id == target_category_id)
+
+        stmt = select(TradeNameIndex.normalized_ar, TradeNameIndex.normalized_en).where(*stmt_conds)
         result = await self.session.execute(stmt)
         reserved_rows = result.fetchall()
         reserved_ar = {r[0] for r in reserved_rows}
@@ -650,12 +623,25 @@ class SuggestionEngine:
             )
             act_res = await self.session.execute(active_cat_stmt)
             active_cat_records = act_res.fetchall()
-        else:
-            active_cat_stmt = select(TradeNameIndex.normalized_ar, TradeNameIndex.normalized_en).where(
-                TradeNameIndex.status.in_(["active", "reserved"]),
-            ).limit(200)
-            act_res = await self.session.execute(active_cat_stmt)
-            active_cat_records = act_res.fetchall()
+
+        # Collect existing base names in category to enforce base-name reservation
+        existing_cat_base_en: set[str] = set()
+        existing_cat_base_ar: set[str] = set()
+        existing_base_tokens_en: list[set[str]] = []
+        existing_base_tokens_ar: list[set[str]] = []
+        for act_ar, act_en in active_cat_records:
+            if act_en:
+                key = canonical_base_name(act_en, lang="en")
+                if key:
+                    existing_cat_base_en.add(key)
+                    base = extract_base_name(act_en, lang="en")
+                    existing_base_tokens_en.append({token.casefold() for token in base.brand_tokens})
+            if act_ar:
+                key = canonical_base_name(act_ar, lang="ar")
+                if key:
+                    existing_cat_base_ar.add(key)
+                    base = extract_base_name(act_ar, lang="ar")
+                    existing_base_tokens_ar.append(set(base.brand_tokens))
 
         unreserved: list[dict] = []
         clean_in_en = normalize_english(name_en) if name_en else ""
@@ -670,6 +656,30 @@ class SuggestionEngine:
             if (clean_in_en and cand["norm_en"] == clean_in_en) or (clean_in_ar and cand["norm_ar"] == clean_in_ar):
                 continue
 
+            # Rule 3: Candidate base name must NOT conflict with protected base name or existing base names
+            cand_ext_en = extract_base_name(cand["norm_en"], lang="en")
+            cand_ext_ar = extract_base_name(cand["norm_ar"], lang="ar")
+            cand_base_en = canonical_base_name(cand["norm_en"], lang="en") or ""
+            cand_base_ar = canonical_base_name(cand["norm_ar"], lang="ar") or ""
+            original_base_en = canonical_base_name(brand_en, lang="en")
+            original_base_ar = canonical_base_name(brand_ar, lang="ar")
+
+            if brand_conflict:
+                if (original_base_en and cand_base_en == original_base_en) or (original_base_ar and cand_base_ar == original_base_ar):
+                    continue
+
+            if cand_base_en and cand_base_en in existing_cat_base_en:
+                continue
+            if cand_base_ar and cand_base_ar in existing_cat_base_ar:
+                continue
+
+            cand_tokens_en = {token.casefold() for token in cand_ext_en.brand_tokens}
+            cand_tokens_ar = set(cand_ext_ar.brand_tokens)
+            if any(tokens and (tokens.issubset(cand_tokens_en) or cand_tokens_en.issubset(tokens)) for tokens in existing_base_tokens_en):
+                continue
+            if any(tokens and (tokens.issubset(cand_tokens_ar) or cand_tokens_ar.issubset(tokens)) for tokens in existing_base_tokens_ar):
+                continue
+
             # Verify candidate against existing names in activity to prevent confusingly similar suggestions
             cand_canon_en = _clean_canon(cand["norm_en"])
             cand_canon_ar = _clean_canon(cand["norm_ar"])
@@ -679,12 +689,22 @@ class SuggestionEngine:
                 act_canon_en = _clean_canon(act_en or "")
                 act_canon_ar = _clean_canon(act_ar or "")
 
-                if cand_canon_en and act_canon_en:
-                    if cand_canon_en == act_canon_en or fuzz.ratio(cand_canon_en, act_canon_en) >= 82:
+                # Exact duplicate full name
+                if (cand_canon_en and act_canon_en and cand_canon_en == act_canon_en) or \
+                   (cand_canon_ar and act_canon_ar and cand_canon_ar == act_canon_ar):
+                    is_similar_conflict = True
+                    break
+
+                # High typo similarity on base name (e.g. Cloudjun vs Cloudjune)
+                if cand_base_en and act_canon_en:
+                    act_b_en = canonical_base_name(act_canon_en, lang="en")
+                    if act_b_en and fuzz.ratio(cand_base_en, act_b_en) >= base_similarity_threshold:
                         is_similar_conflict = True
                         break
-                if cand_canon_ar and act_canon_ar:
-                    if cand_canon_ar == act_canon_ar or fuzz.ratio(cand_canon_ar, act_canon_ar) >= 82:
+
+                if cand_base_ar and act_canon_ar:
+                    act_b_ar = canonical_base_name(act_canon_ar, lang="ar")
+                    if act_b_ar and fuzz.ratio(cand_base_ar, act_b_ar) >= base_similarity_threshold:
                         is_similar_conflict = True
                         break
 
@@ -719,6 +739,26 @@ class SuggestionEngine:
             else:
                 final_en = base_en
                 final_ar = base_ar
+
+            from pipeline.name_composer import compose
+            from pipeline.deterministic_gates import DeterministicGates, SignalType
+
+            final_name = compose(
+                name_ar=final_ar,
+                name_en=final_en,
+                operation_type="new",
+                is_outside_uaq=False,
+                old_legal_form=None,
+                new_legal_form=None,
+                previous_name_ar=None,
+                previous_name_en=None,
+            )
+            final_signals = await DeterministicGates(
+                index_repo=index_repo,
+                lexicon_repo=self.lexicon_repo,
+            ).run(composed=final_name, category_id=target_category_id)
+            if any(signal.signal_type in (SignalType.BLOCKED, SignalType.NEEDS_REVIEW) for signal in final_signals):
+                continue
 
             final_suggestions.append(
                 SuggestionItemDTO(

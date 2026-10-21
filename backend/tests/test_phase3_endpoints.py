@@ -100,38 +100,43 @@ async def test_suggest_category_deterministic(client: AsyncClient):
     """
     POST /TradeName/SuggestCategory: Deterministic keyword classification fallback.
     """
-    # Tech keywords
-    resp_tech = await client.post(
-        "/TradeName/SuggestCategory",
-        json={"NameAr": "شركة الحلول البرمجية", "NameEn": "Tech Solutions Software", "ActivityType": "Software development"},
-    )
-    assert resp_tech.status_code == 200
-    assert resp_tech.json()["suggested_category_code"] == "TECH_003"
-    assert "tech" in resp_tech.json()["reason_en"].lower() or "technology" in resp_tech.json()["reason_en"].lower() or "aligned" in resp_tech.json()["reason_en"].lower()
+    original_flag = settings.ai_analyzer
+    settings.ai_analyzer = FlagMode.off
+    try:
+        # Tech keywords
+        resp_tech = await client.post(
+            "/TradeName/SuggestCategory",
+            json={"NameAr": "شركة الحلول البرمجية", "NameEn": "Tech Solutions Software", "ActivityType": "Software development"},
+        )
+        assert resp_tech.status_code == 200
+        assert resp_tech.json()["suggested_category_code"] == "TECH_003"
+        assert "tech" in resp_tech.json()["reason_en"].lower() or "technology" in resp_tech.json()["reason_en"].lower() or "aligned" in resp_tech.json()["reason_en"].lower()
 
-    # Restaurant keywords
-    resp_rest = await client.post(
-        "/TradeName/SuggestCategory",
-        json={"NameAr": "مطعم ومقهى السعادة", "NameEn": "Happiness Restaurant & Cafe", "ActivityType": "Restaurant"},
-    )
-    assert resp_rest.status_code == 200
-    assert resp_rest.json()["suggested_category_code"] == "COMM_001"
+        # Restaurant keywords
+        resp_rest = await client.post(
+            "/TradeName/SuggestCategory",
+            json={"NameAr": "مطعم ومقهى السعادة", "NameEn": "Happiness Restaurant & Cafe", "ActivityType": "Restaurant"},
+        )
+        assert resp_rest.status_code == 200
+        assert resp_rest.json()["suggested_category_code"] == "REST_004"
 
-    # Manufacturing keywords
-    resp_cont = await client.post(
-        "/TradeName/SuggestCategory",
-        json={"NameAr": "مصنع الأفق للحديد", "NameEn": "Al Ofoq Iron Manufacturing", "ActivityType": "Manufacturing"},
-    )
-    assert resp_cont.status_code == 200
-    assert resp_cont.json()["suggested_category_code"] == "INDU_007"
+        # Manufacturing keywords
+        resp_cont = await client.post(
+            "/TradeName/SuggestCategory",
+            json={"NameAr": "مصنع الأفق للحديد", "NameEn": "Al Ofoq Iron Manufacturing", "ActivityType": "Manufacturing"},
+        )
+        assert resp_cont.status_code == 200
+        assert resp_cont.json()["suggested_category_code"] == "INDU_007"
 
-    # Consultancy keywords
-    resp_serv = await client.post(
-        "/TradeName/SuggestCategory",
-        json={"NameAr": "رواد للاستشارات الإدارية", "NameEn": "Rowad Management Consulting", "ActivityType": "Management consultancy"},
-    )
-    assert resp_serv.status_code == 200
-    assert resp_serv.json()["suggested_category_code"] == "SERV_002"
+        # Consultancy keywords
+        resp_serv = await client.post(
+            "/TradeName/SuggestCategory",
+            json={"NameAr": "رواد للاستشارات الإدارية", "NameEn": "Rowad Management Consulting", "ActivityType": "Management consultancy"},
+        )
+        assert resp_serv.status_code == 200
+        assert resp_serv.json()["suggested_category_code"] == "SERV_002"
+    finally:
+        settings.ai_analyzer = original_flag
 
 
 @pytest.mark.asyncio
@@ -185,7 +190,7 @@ async def test_validate_with_suggestion_returns_suggestions(client: AsyncClient)
             "RequestId": "UAQ-TEST-3001",
             "OperationType": "new",
             "LegalForm": "LLC",
-            "ActivityCategoryId": 101,
+            "ActivityCategoryId": 3,
         }
         resp = await client.post("/TradeName/ValidateWithSuggestion", json=payload)
         assert resp.status_code == 200

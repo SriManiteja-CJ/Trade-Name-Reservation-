@@ -203,38 +203,44 @@ async def test_update_existing_trade_name_self_exclusion(client: AsyncClient, db
 @pytest.mark.asyncio
 async def test_alternative_suggestions_verified_against_database(db_session: AsyncSession):
     """Requirement 4: Suggestions returned must be verified against database and not already exist in the activity."""
-    index_repo = TradeNameIndexRepository(db_session)
-    # Seed known active names in Category 4
-    await index_repo.upsert(
-        trade_name_id=6006,
-        normalized_ar="مطعم صحراء",
-        normalized_en="sahra restaurant",
-        phonetic_key="SHR|SHR",
-        status="active",
-        category_id=4,
-    )
-    await index_repo.upsert(
-        trade_name_id=6007,
-        normalized_ar="كافيه صحراء اكسبريس",
-        normalized_en="sahra express cafe",
-        phonetic_key="SHR|SHR",
-        status="active",
-        category_id=4,
-    )
-    await db_session.commit()
+    settings = get_settings()
+    original_flag = settings.ai_suggestions
+    settings.ai_suggestions = FlagMode.on
+    try:
+        index_repo = TradeNameIndexRepository(db_session)
+        # Seed known active names in Category 4
+        await index_repo.upsert(
+            trade_name_id=6006,
+            normalized_ar="مطعم صحراء",
+            normalized_en="sahra restaurant",
+            phonetic_key="SHR|SHR",
+            status="active",
+            category_id=4,
+        )
+        await index_repo.upsert(
+            trade_name_id=6007,
+            normalized_ar="كافيه واحة اكسبريس",
+            normalized_en="oasis express cafe",
+            phonetic_key="SHR|SHR",
+            status="active",
+            category_id=4,
+        )
+        await db_session.commit()
 
-    engine = SuggestionEngine(db_session)
-    suggestions = await engine.generate(
-        name_ar="مطعم صحراء",
-        name_en="Sahra Restaurant",
-        category_id=4,
-        limit=6,
-    )
+        engine = SuggestionEngine(db_session)
+        suggestions = await engine.generate(
+            name_ar="مطعم صحراء",
+            name_en="Sahra Restaurant",
+            category_id=4,
+            limit=6,
+        )
 
-    assert len(suggestions) > 0
-    # None of the returned suggestions should match the existing names
-    for s in suggestions:
-        assert s.name_en.lower() != "sahra restaurant"
-        assert s.name_en.lower() != "sahra express cafe"
-        # When brand conflict occurs, distinctive alternative brands are provided
-        assert "sahra" not in s.name_en.lower()
+        assert len(suggestions) > 0
+        # None of the returned suggestions should match the existing names
+        for s in suggestions:
+            assert s.name_en.lower() != "sahra restaurant"
+            assert s.name_en.lower() != "oasis express cafe"
+            # When brand conflict occurs, distinctive alternative brands are provided
+            assert "sahra" not in s.name_en.lower()
+    finally:
+        settings.ai_suggestions = original_flag

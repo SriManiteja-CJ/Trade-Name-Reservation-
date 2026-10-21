@@ -132,6 +132,7 @@ Open a terminal and execute:
 
 ```powershell
 cd backend
+.venv\Scripts\python.exe -m alembic upgrade head
 .venv\Scripts\python.exe -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 - API Base: `http://localhost:8000`

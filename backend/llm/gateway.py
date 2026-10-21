@@ -511,7 +511,7 @@ class LlmGateway:
                 {"role": "user", "content": user_message},
             ],
             "temperature": 0.7,   # Suggestions benefit from creative diversity
-            "max_tokens": 750,
+            "max_tokens": 450,
             "response_format": _format_response_format(SuggestionBatchOutput.model_json_schema()),
         }
 
@@ -815,7 +815,7 @@ class LlmGateway:
                 {"role": "user", "content": user_message},
             ],
             "temperature": 0,
-            "max_tokens": 400,
+            "max_tokens": 1024,
             "response_format": {"type": "json_object"},
         }
 
@@ -1037,51 +1037,27 @@ class LlmGateway:
         latency_ms: Optional[int],
         tokens: Optional[int],
     ) -> None:
-        """Write an AiDecisionAudit row safely in an isolated session so request transaction is never corrupted (N3)."""
+        """Persist an audit entry independently of the request's database transaction."""
+        from db.session import AsyncSessionLocal
+
         try:
-            if self.session is not None:
-                audit_repo = AuditRepository(self.session)
-                await asyncio.wait_for(
-                    audit_repo.record_audit(
-                        request_id=request_id,
-                        channel=channel,
-                        input_hash=input_hash,
-                        prompt_version=prompt_version,
-                        model_id=settings.effective_analyzer_model,
-                        outcome=outcome,
-                        raw_output=raw_output,
-                        latency_ms=latency_ms,
-                        tokens=tokens,
-                    ),
-                    timeout=3.0,
+            async with AsyncSessionLocal() as audit_session:
+                await AuditRepository(audit_session).record_audit(
+                    request_id=request_id,
+                    channel=channel,
+                    input_hash=input_hash,
+                    prompt_version=prompt_version,
+                    model_id=settings.effective_analyzer_model,
+                    outcome=outcome,
+                    raw_output=raw_output,
+                    latency_ms=latency_ms,
+                    tokens=tokens,
                 )
-                try:
-                    await self.session.commit()
-                except Exception:
-                    pass
-            else:
-                from db.session import AsyncSessionLocal
-                async with AsyncSessionLocal() as audit_session:
-                    audit_repo = AuditRepository(audit_session)
-                    await asyncio.wait_for(
-                        audit_repo.record_audit(
-                            request_id=request_id,
-                            channel=channel,
-                            input_hash=input_hash,
-                            prompt_version=prompt_version,
-                            model_id=settings.effective_analyzer_model,
-                            outcome=outcome,
-                            raw_output=raw_output,
-                            latency_ms=latency_ms,
-                            tokens=tokens,
-                        ),
-                        timeout=3.0,
-                    )
-                    await audit_session.commit()
-        except Exception as audit_err:
-            logger.warning(
-                "audit_write_failed_or_timed_out",
-                extra={"request_id": request_id, "error": str(audit_err)}
+                await audit_session.commit()
+        except Exception:
+            logger.exception(
+                "llm_audit_write_failed",
+                extra={"request_id": request_id, "outcome": outcome},
             )
 
     async def close(self) -> None:

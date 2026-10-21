@@ -273,11 +273,13 @@ def build_suggestions_user_message(
             f"ACTIVITY CATEGORY: {activity_category or 'General Business'}\n"
             f"LEGAL FORM: {legal_form or 'None specified'}\n\n"
             f"CRITICAL REGISTRY CONFLICT WARNING:\n"
-            f"The distinctive brand mark '{conflict_brand}' is ALREADY REGISTERED by an active company in the official registry.\n"
-            f"Under UAE Commercial Trade Name regulations, any variations containing '{conflict_brand}' are strictly BLOCKED due to confusion and trademark collision.\n\n"
+            f"The exact brand mark '{conflict_brand}' is ALREADY REGISTERED by an active company in this category.\n"
+            f"Under UAE Commercial Trade Name regulations, any exact repetition of '{conflict_brand}' is blocked.\n\n"
             "Instructions:\n"
-            f"- Do NOT use the word '{conflict_brand}' or any transliterations of it in any of the suggestions.\n"
-            "- Propose creative, distinctive, memorable, and premium ALTERNATIVE BRAND NAMES tailored to this activity category.\n"
+            f"- Propose creative, close-cousin brand variations that evoke the applicant's original brand identity, theme, and concept without copying the exact blocked term '{conflict_brand}'.\n"
+            f"- For example, if the proposed brand is 'CloudJune', generate closely related, attractive names such as 'CloudNine', 'CloudJini', 'CloudNova', 'CloudSync', 'CloudPulse', 'CloudSphere', 'SkyJune', or 'JuneTech' paired with their business descriptors.\n"
+            "- Retain the applicant's business activity descriptors (e.g. 'Technologies', 'Solutions', 'Systems', 'Digital', 'Cafe', 'Restaurant', 'Consulting').\n"
+            "- NEVER suggest completely unfamiliar, arbitrary, or disconnected names (such as 'Apex', 'Nexus', 'Prime', 'Alpha'). Stay close to the user's concept!\n"
             "- Ensure all names are phonetically matched between Arabic and English.\n"
             "- Return a JSON object with a 'suggestions' list of objects matching the schema."
         )
@@ -349,10 +351,10 @@ DEFAULT_CATEGORY_SYSTEM_PROMPT = """You are the Lead Business Activity Intellige
 Analyze the user's trade name and entered/selected business activity against the 10 official UAE economic activity categories:
 
 OFFICIAL CATEGORIES:
-1. COMM_001 (Commercial & Trading): General trading, Import/export, Wholesale trade, Retail trade, Foodstuff & Beverage Trading, Cafe and Restaurant Operations
+1. COMM_001 (Commercial & Trading): General trading, Import/export, Wholesale trade, Retail trade, Foodstuff & Beverage Trading, Online retail
 2. SERV_002 (Consulting & Professional Services): Management consultancy, Business consultancy, Professional advisory services, Corporate Services & Auditing
 3. TECH_003 (IT & Technology): Software development, IT consultancy, Technology services, Cloud computing & Data hosting, Artificial Intelligence & Cyber Security
-4. ECOM_004 (E-Commerce): Online retail, Electronic trading, E-Commerce portal operations, Drop-shipping & Online Fulfillment
+4. REST_004 (Restaurants, Cafes & Food Services): Cafe and Restaurant, Restaurant, Cafe, Fast Food Restaurant, Bakery and Sweets, Cafe and Restaurant Operations, Foodstuff Catering & Lounge
 5. MKTG_005 (Digital Marketing & Advertising): Digital marketing, Advertising services, Marketing consultancy, Public Relations & Media Buying
 6. MDIA_006 (Media & Creative): Content creation, Media production, Creative services, Graphic Design & Photography
 7. INDU_007 (Industrial & Manufacturing): Manufacturing, Processing, Production, Assembly

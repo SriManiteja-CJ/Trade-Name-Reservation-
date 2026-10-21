@@ -116,6 +116,7 @@ async def test_suggestions_reserved_exclusion(db_session: AsyncSession):
                 name_ar="الرواد",
                 name_en="Al Rowad",
                 limit=10,
+                category_id=1,
             )
 
             # Neither active "AL ROWAD TRADING" nor reserved "AL ROWAD SERVICES" should be in results
@@ -175,6 +176,7 @@ async def test_suggestions_lexicon_screening(db_session: AsyncSession):
                 name_ar="الرواد",
                 name_en="Al Rowad",
                 limit=10,
+                category_id=1,
             )
 
             # The casino candidate must be eliminated by lexicon gate
@@ -205,6 +207,7 @@ async def test_suggestions_legal_form_appended(db_session: AsyncSession):
                 name_en="Al Rowad",
                 legal_form="LLC",
                 limit=5,
+                category_id=1,
             )
 
             assert len(res) > 0
@@ -267,4 +270,3 @@ async def test_suggestions_brand_conflict_alternative_names(db_session: AsyncSes
                 assert "LIMITED LIABILITY COMPANY" not in item.name_en
     finally:
         settings.ai_suggestions = original_flag
-

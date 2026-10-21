@@ -89,6 +89,10 @@ class TradeNameIndex(Base):
     # Activity category (Gap #1: single category_id; plural codes TBD)
     category_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # Canonical extracted base names used for atomic, activity-scoped reservation.
+    base_name_en: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    base_name_ar: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Status values: active | released | expired | draft
     # Only 'active' records participate in F2 (exact dup) and F3 (similarity).
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
@@ -122,6 +126,22 @@ class TradeNameIndex(Base):
             unique=True,
             postgresql_where=text("status = 'active' AND normalized_ar != ''"),
             sqlite_where=text("status = 'active' AND normalized_ar != ''"),
+        ),
+        Index(
+            "uq_tni_active_cat_base_en",
+            "category_id",
+            "base_name_en",
+            unique=True,
+            postgresql_where=text("status IN ('active', 'reserved') AND category_id IS NOT NULL AND base_name_en IS NOT NULL AND base_name_en != ''"),
+            sqlite_where=text("status IN ('active', 'reserved') AND category_id IS NOT NULL AND base_name_en IS NOT NULL AND base_name_en != ''"),
+        ),
+        Index(
+            "uq_tni_active_cat_base_ar",
+            "category_id",
+            "base_name_ar",
+            unique=True,
+            postgresql_where=text("status IN ('active', 'reserved') AND category_id IS NOT NULL AND base_name_ar IS NOT NULL AND base_name_ar != ''"),
+            sqlite_where=text("status IN ('active', 'reserved') AND category_id IS NOT NULL AND base_name_ar IS NOT NULL AND base_name_ar != ''"),
         ),
     )
 

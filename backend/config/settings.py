@@ -202,6 +202,14 @@ class Settings(BaseSettings):
     policy_block_confidence_threshold: float = Field(default=0.85)
     # LLM risk confidence below this → NEEDS_REVIEW (when severity=block)
     policy_review_confidence_threshold: float = Field(default=0.60)
+    # Deterministic name similarity rules shared by validation and registration.
+    trade_name_similarity_review_threshold: float = Field(default=0.82, ge=0.0, le=1.0)
+    trade_name_base_similarity_threshold: int = Field(default=88, ge=0, le=100)
+    trade_name_base_min_confidence: float = Field(default=0.70, ge=0.0, le=1.0)
+    # Optional additional descriptor vocabulary, comma-separated. Official
+    # catalogue terms are always included by the extractor.
+    trade_name_descriptors_en: str = Field(default="")
+    trade_name_descriptors_ar: str = Field(default="")
 
     # ------------------------------------------------------------------
     # Per-capability feature flags  (F16, spec §5.3)
@@ -209,7 +217,7 @@ class Settings(BaseSettings):
     # Controls Stage ④ LLM semantic validation
     ai_analyzer: FlagMode = Field(default=FlagMode.off)
     # Controls Stage ⑥ LLM suggestion generation
-    ai_suggestions: FlagMode = Field(default=FlagMode.off)
+    ai_suggestions: FlagMode = Field(default=FlagMode.on)
     # Controls Stage ⑧ Reviewer copilot
     ai_reviewer_brief: FlagMode = Field(default=FlagMode.off)
     # Controls Stage ③ hybrid semantic search (embedding component)

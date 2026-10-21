@@ -176,16 +176,6 @@ class DeterministicGates:
             category_id=category_id,
             exclude_trade_name_id=exclude_trade_name_id,
         )
-        if not duplicates and category_id is not None:
-            # Fallback check across all active categories in case client category_id was misaligned
-            cross_duplicates = await self._index.lookup_exact(
-                normalized_ar=composed.normalized_ar,
-                normalized_en=composed.normalized_en,
-                category_id=None,
-                exclude_trade_name_id=exclude_trade_name_id,
-            )
-            if cross_duplicates:
-                duplicates = cross_duplicates
 
         for dup in duplicates:
             signals.append(
@@ -204,16 +194,98 @@ class DeterministicGates:
             )
 
         # -----------------------------------------------------------------
-        # Duplicate and Similar Name Prevention under the same activity type
-        # Identifies minor spelling variations, punctuation, and typos (Requirement 2)
+        # Base-Name Extraction, Generic Name Check & Activity Reservation
+        # Enforces base-name uniqueness within category_id (Requirements 1 & 2)
         # -----------------------------------------------------------------
+        from pipeline.base_name_extractor import extract_base_name
+        ext_en = extract_base_name(composed.normalized_en, lang="en")
+        ext_ar = extract_base_name(composed.normalized_ar, lang="ar")
+
+        from config.settings import get_settings
+
+        extraction_results = []
+        if composed.normalized_en:
+            extraction_results.append(ext_en)
+        if composed.normalized_ar:
+            extraction_results.append(ext_ar)
+
+        if (
+            not duplicates
+            and (
+                category_id is None
+                or not extraction_results
+                or all(
+                    result.is_generic
+                    or result.confidence < get_settings().trade_name_base_min_confidence
+                    for result in extraction_results
+                )
+            )
+        ):
+            signals.append(
+                GateSignal(
+                    signal_type=SignalType.NEEDS_REVIEW,
+                    source="generic_name" if all(r.is_generic for r in extraction_results) else "base_name_uncertain",
+                    category="generic_name",
+                    severity="review",
+                    reason_en=(
+                        "A valid activity category is required for availability checks."
+                        if category_id is None
+                        else "The distinctive base name could not be identified reliably; this name requires manual review."
+                    ),
+                    reason_ar=(
+                        "يلزم تحديد فئة نشاط صحيحة للتحقق من توفر الاسم."
+                        if category_id is None
+                        else "تعذر تحديد الاسم الأساسي المميز بدرجة موثوقة؛ يتطلب الاسم مراجعة يدوية."
+                    ),
+                    fix_en="Select an activity and provide a clearly distinctive base name.",
+                    fix_ar="يرجى تحديد النشاط وإدخال اسم أساسي مميز بوضوح.",
+                )
+            )
+
+        # Protected Base-Name Check under the selected activity type
         if category_id is not None and not any(s.source == "exact_duplicate" for s in signals):
+            base_conflicts = await self._index.lookup_base_name_in_category(
+                base_name_en=ext_en.base_name,
+                base_name_ar=ext_ar.base_name,
+                category_id=category_id,
+                exclude_trade_name_id=exclude_trade_name_id,
+            )
+            for conflict_entry in base_conflicts:
+                prot_base = ext_en.base_name or ext_ar.base_name
+                signals.append(
+                    GateSignal(
+                        signal_type=SignalType.BLOCKED,
+                        source="reserved_base_name",
+                        category="reserved_base_name",
+                        severity="block",
+                        matched_term=f"ID:{conflict_entry.trade_name_id}",
+                        reason_en=(
+                            f"The base name '{prot_base}' is already registered under this business activity "
+                            f"(Registration: '{conflict_entry.normalized_en or conflict_entry.normalized_ar}'). "
+                            f"Trade names sharing this base name are reserved and cannot be registered under the same activity."
+                        ),
+                        reason_ar=(
+                            f"الاسم الأساسي '{ext_ar.base_name or ext_en.base_name}' مسجل ومحجوز مسبقاً ضمن هذا النشاط التجاري "
+                            f"(السجل: '{conflict_entry.normalized_ar or conflict_entry.normalized_en}'). "
+                            f"لا يمكن تكرار استخدام نفس الاسم الأساسي تحت نفس النشاط."
+                        ),
+                        fix_en="Please explore similar trade names with a different base name.",
+                        fix_ar="يرجى استكشاف أسماء تجارية بديلة ذات اسم أساسي مختلف.",
+                        similar_entry=conflict_entry,
+                    )
+                )
+
+        # -----------------------------------------------------------------
+        # Confusing Similarity Prevention under the same activity type
+        # Identifies minor spelling variations, punctuation, and typos
+        # -----------------------------------------------------------------
+        if category_id is not None and not any(s.source in ("exact_duplicate", "reserved_base_name") for s in signals):
             similar_matches = await self._index.find_similar_in_category(
                 normalized_ar=composed.normalized_ar,
                 normalized_en=composed.normalized_en,
                 category_id=category_id,
                 exclude_trade_name_id=exclude_trade_name_id,
-                similarity_threshold=0.82,
+                similarity_threshold=get_settings().trade_name_similarity_review_threshold,
             )
             for sim_entry, sim_score, match_type in similar_matches[:3]:
                 if sim_score >= 0.99 or match_type == "exact_duplicate":
